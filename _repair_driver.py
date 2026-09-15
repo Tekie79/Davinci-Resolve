@@ -8,33 +8,62 @@ BASE = "ca6f233124a0992af694969722ba63883a766938"
 
 
 def main():
-    # Refuse to patch code another contributor changed after the reviewed base.
     subprocess.run(["git", "diff", "--exit-code", BASE, "--", "meher_resolve_hub", "Media Manager.py", "Meher Flow Resolve Hub.py"], check=True)
     backend.apply()
     original_transform = backend.transform_method
     def transform(relative, class_name, name, old, new):
-        # Removing a statement must remove its indentation as well.
         if old == "item.Selected = False\n" and new == "":
             old = "                    " + old
         return original_transform(relative, class_name, name, old, new)
     backend.transform_method = transform
     import _repair_ui
     _repair_ui.apply()
-
-    # Still exports can be asynchronous even when a binding returns None.
-    backend.transform_method("meher_resolve_hub/services/still_service.py", "StillService", "_export_current", 'actual = requested if not direct_failed', '''if callable(method) and not direct_failed:
+    backend.put_method("meher_resolve_hub/services/still_service.py", "StillService", "_export_current", '''
+def _export_current(self, project, timeline, destination):
+    # Every export has an isolated discovery namespace and exclusive publication.
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError("Output already exists: %s" % destination)
+    with tempfile.TemporaryDirectory(prefix=".resolve-hub-export-", dir=str(destination.parent)) as folder:
+        requested = Path(folder) / "frame.png"
+        method = getattr(project, "ExportCurrentFrameAsStill", None)
+        direct_failed = False
+        if callable(method):
+            try:
+                method(str(requested))
+            except Exception:
+                direct_failed = True
+        actual = None
+        if callable(method) and not direct_failed:
             deadline = time.monotonic() + 0.5
-            while time.monotonic() < deadline:
+            while True:
                 if requested.is_file() and requested.stat().st_size > 0:
+                    actual = requested
+                    break
+                if time.monotonic() >= deadline:
                     break
                 time.sleep(0.02)
-        actual = requested if not direct_failed''')
-    backend.transform_method("meher_resolve_hub/services/still_service.py", "StillService", "_export_current", 'actual = find_exported_png(folder, requested)', '''deadline = time.monotonic() + 0.5
-            actual = find_exported_png(folder, requested)
-            while not actual and time.monotonic() < deadline:
+        if actual is None:
+            if requested.exists():
+                requested.unlink()
+            try:
+                captured = timeline.GrabStill()
+                album = project.GetGallery().GetCurrentStillAlbum()
+                if captured and album:
+                    album.ExportStills([captured], folder, "frame", "png")
+            except Exception:
+                return None
+            deadline = time.monotonic() + 0.5
+            while True:
+                actual = find_exported_png(folder, requested)
+                if actual and actual.stat().st_size > 0:
+                    break
+                if time.monotonic() >= deadline:
+                    return None
                 time.sleep(0.02)
-                actual = find_exported_png(folder, requested)''')
-
+        return publish_new_file(actual, destination)
+''')
     for path in Path("meher_resolve_hub").rglob("*.py"):
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     tracked = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
@@ -53,23 +82,23 @@ The first marker column now reserves a 96 x 54 preview slot before images load. 
 
 ## Marker editing
 
-Filter membership and sort order are recomputed after edits. Rows update in place when the order/membership did not change. Full list rebuilds preserve a visible anchor where UIManager supports viewport rectangles. The shortened notes cell is read-only: double-click it to focus the full notes editor in the same workspace. Clear Selection no longer leaves a stale current item available for editing. Numeric modifier masks preserve Ctrl/Cmd/Shift multi-selection. Periodic marker sync does not discard an in-progress draft in the same timeline.
+Filter membership and sort order are recomputed after edits. Rows update in place when order/membership did not change. List rebuilds preserve a visible anchor where UIManager supports viewport rectangles. The shortened notes cell is read-only: double-click it to focus the full notes editor in the same workspace. Clear Selection no longer leaves a stale current item available for editing. Numeric modifier masks preserve Ctrl/Cmd/Shift multi-selection. Periodic marker sync does not discard an in-progress draft in the same timeline.
 
 ## Other workspaces
 
 Rename Apply revalidates original names, metadata used by templates, output validity and collisions across the selection before writing. It uses read-back verification and retry-safe partial Undo. Non-extension periods are preserved by the Original token.
 
-Still jobs recheck conflicts at execution, reject escaping filenames and case-insensitive duplicate outputs, skip captured jobs on retry, and export each frame into an isolated staging directory. Final files are created exclusively, never overwritten. Gallery fallback can only discover images from its own job directory. Successful exports returning None are accepted after file verification, including delayed file creation. Capture/import counts no longer count the same asset twice. Playhead restoration is verified and its failures are reported.
+Still jobs recheck conflicts at execution, reject escaping filenames and case-insensitive duplicate outputs, skip captured jobs on retry, and export each frame into an isolated staging directory. Final files are created exclusively, never overwritten. Gallery fallback can only discover images from its own job directory. Successful exports returning None are accepted after file verification, including delayed file creation. Capture/import counts no longer count the same asset twice. Playhead restoration is verified and failures are reported.
 
 Health distinguishes unknown usage from a known-empty timeline. Inline metadata editing validates its selection snapshot before writing. Cache cleanup only deletes Hub cache-key filenames, preserving unrelated PNGs in user-selected folders. Tracked Python bytecode is removed and ignored.
 
 ## Automated validation
 
-Run `python3 -m unittest discover -s tests -v`. New coverage is in `tests/test_followup_repairs.py`; earlier audit regressions remain in `tests/test_audit_regressions.py`. CI artifacts retain exact test output. No test assertion is removed or skipped to make the suite pass.
+Run `python3 -m unittest discover -s tests -v`. New coverage is in `tests/test_followup_repairs.py`; earlier audit regressions remain in `tests/test_audit_regressions.py`. CI artifacts retain exact test output. No assertion is removed or skipped to make the suite pass.
 
 ## Native Resolve acceptance — still required
 
-Use a disposable project. Open the installed v0.3.23 runtime and test repeated clicks, Ctrl/Cmd/Shift selection, scrolling during thumbnail loading, narrow/wide resizing, inline name/time edits, color changes under a filter, marker moves crossing sort positions, notes longer than 80 characters with line breaks, rapid start/end nudges, Clear Selection, batch moves and Undo, source timeline changes, still filename collisions, CSV metadata Undo, and ordinary Grab Still import/bin restoration. Verify image content, not just its timecode: API playhead read-back alone cannot prove the native viewer has finished rendering.
+Use a disposable project. Open installed v0.3.23 and test repeated clicks, Ctrl/Cmd/Shift selection, scrolling during thumbnail loading, narrow/wide resizing, inline name/time edits, color changes under a filter, marker moves crossing sort positions, notes longer than 80 characters with line breaks, rapid start/end nudges, Clear Selection, batch moves and Undo, source timeline changes, still filename collisions, CSV metadata Undo, and ordinary Grab Still import/bin restoration. Verify image content, not just its timecode: API playhead read-back alone cannot prove the native viewer has finished rendering.
 
 This change does not claim that all P0 functionality or every Resolve build is fully validated. The existing disabled Play Range control remains disabled; unsupported API features are not simulated. No source camera files are renamed/deleted, no main-branch merge is performed, and no local Resolve installation is changed by this repository update.
 ''', encoding="utf-8")
