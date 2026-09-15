@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from meher_resolve_hub.ui.shell import ResolveHubShell
 from meher_resolve_hub.models.marker import MarkerRecord
 from meher_resolve_hub.models.operation import OperationResult
+from meher_resolve_hub.services.marker_service import MarkerService
 from tests.fakes import FakeTimeline
 
 
@@ -57,9 +58,10 @@ class FakePropertyTree(FakeMethodTree):
 class FakeWindow:
     def __init__(self, tree):
         self.tree = tree
+        self.selection_count = type("Label", (), {"Text": ""})()
 
     def GetItems(self):
-        return {"MarkerTree": self.tree}
+        return {"MarkerTree": self.tree, "MarkerSelectionCount": self.selection_count}
 
 
 class FakeClosableWindow:
@@ -88,6 +90,7 @@ class FakeBuildTreeItem:
         self.flags = {}
         self.TextColor = {}
         self.BackgroundColor = {}
+        self.background_calls = []
 
     def GetFlags(self):
         return self.flags
@@ -100,6 +103,7 @@ class FakeBuildTreeItem:
 
     def SetBackgroundColor(self, column, color):
         self.BackgroundColor[column] = color
+        self.background_calls.append(column)
 
 
 class FakeBuildTree:
@@ -117,6 +121,9 @@ class FakeBuildTree:
 
     def TopLevelItem(self, index):
         return self.items[index]
+
+    def TopLevelItemCount(self):
+        return len(self.items)
 
 
 
@@ -307,6 +314,114 @@ class TreeAdapterTests(unittest.TestCase):
         self.assertEqual(tree.items[0].BackgroundColor[2]["A"], 1.0)
         self.assertFalse(shell._populating_marker_tree)
         self.assertFalse(shell._syncing_marker_selection)
+
+    def test_marker_selection_repaints_only_changed_rows(self):
+        tree = FakeBuildTree()
+        shell = ResolveHubShell.__new__(ResolveHubShell)
+        shell.window = FakeWindow(tree)
+        shell.filtered_markers = [
+            MarkerRecord("timeline", "timeline", frame, frame, frame, 1, "Blue", "Marker", "")
+            for frame in (0, 10, 20)
+        ]
+        shell._selected_marker_frames = {0}
+        shell._active_marker_frame = 0
+        shell._syncing_marker_selection = False
+        shell._populating_marker_tree = False
+        shell._populate_tree("MarkerTree", [(index, "Marker", "●  Blue", "", "", "", "") for index in range(3)])
+
+        shell._set_marker_selection({10}, 10)
+
+        self.assertEqual(len(tree.items[0].background_calls), 7)
+        self.assertEqual(len(tree.items[1].background_calls), 7)
+        self.assertEqual(len(tree.items[2].background_calls), 0)
+        self.assertFalse(tree.items[1].Selected)
+
+    def test_inline_marker_edit_commits_without_rebuilding_tree(self):
+        timeline = FakeTimeline()
+        context = type("Context", (), {"timeline": timeline, "timeline_id": "timeline"})()
+        original = MarkerRecord("timeline", "timeline", 10, 10, 10, 1, "Blue", "Original", "", source_object=timeline)
+        tree = FakeBuildTree()
+        selection_count = type("Label", (), {"Text": ""})()
+
+        class Window:
+            def GetItems(self):
+                return {"MarkerTree": tree, "MarkerSelectionCount": selection_count}
+
+        class ContextService:
+            def refresh_context(self):
+                return context
+
+            def get_project_fps(self):
+                return 24
+
+        class Markers:
+            def __init__(self):
+                self.candidate = None
+
+            def replace_marker(self, old, candidate, label=""):
+                self.candidate = candidate
+                return OperationResult(True, changed=1)
+
+            @staticmethod
+            def edit_range(marker, **changes):
+                return MarkerService.edit_range(marker, **changes)
+
+        marker_service = Markers()
+        shell = ResolveHubShell.__new__(ResolveHubShell)
+        shell.window = Window()
+        shell.app = type("App", (), {"context": ContextService(), "markers": marker_service})()
+        shell.marker_records = [original]
+        shell.filtered_markers = [original]
+        shell._marker_state = ResolveHubShell._marker_state_signature("timeline", [original])
+        shell._selected_marker_frames = {10}
+        shell._active_marker_frame = None
+        shell._marker_selection_anchor = 10
+        shell._populating_marker_tree = False
+        shell._syncing_marker_selection = False
+        shell._report_result = lambda *args: None
+        shell._refresh_markers = lambda *args, **kwargs: self.fail("single-cell edit rebuilt the marker tree")
+        shell._populate_tree("MarkerTree", [shell._marker_row_values(0, original, context, 24)])
+        tree.items[0].Text[1] = "Renamed"
+
+        # Resolve can omit the column from ItemChanged; the changed cell is detected.
+        shell._marker_tree_item_changed({"item": tree.items[0]})
+
+        self.assertEqual(marker_service.candidate.name, "Renamed")
+        self.assertEqual(shell.marker_records[0].name, "Renamed")
+        self.assertEqual(shell.filtered_markers[0].name, "Renamed")
+        self.assertEqual(tree.items[0].Text[1], "Renamed")
+
+    def test_nudge_updates_marker_in_place(self):
+        marker = MarkerRecord("timeline", "timeline", 10, 10, 14, 5, "Blue", "Marker", "")
+        shell = ResolveHubShell.__new__(ResolveHubShell)
+        shell.app = type("App", (), {"markers": type("Markers", (), {
+            "edit_range": staticmethod(MarkerService.edit_range)
+        })()})()
+        shell._current_marker = lambda: marker
+        committed = []
+        shell._commit_marker_update = lambda original, candidate, label, success: committed.append((original, candidate, label))
+
+        shell._nudge_marker("end", 5)
+
+        self.assertEqual(committed[0][1].end_frame, 19)
+        self.assertEqual(committed[0][1].duration_frames, 10)
+
+    def test_range_commit_marks_thumbnail_dirty_without_generating_it(self):
+        original = MarkerRecord("timeline", "timeline", 10, 10, 14, 5, "Blue", "Marker", "")
+        candidate = MarkerService.edit_range(original, end=19)
+        shell = ResolveHubShell.__new__(ResolveHubShell)
+        shell.app = type("App", (), {"markers": type("Markers", (), {
+            "replace_marker": lambda self, old, new, label="": OperationResult(True, changed=1)
+        })()})()
+        shell._marker_thumbnail_dirty = False
+        shell._report_result = lambda *args: None
+        shell._sync_marker_update = lambda *args: None
+        shell._restore_marker_row = lambda *args: None
+        shell._refresh_marker_thumb = lambda *args: self.fail("range commit generated a thumbnail before Apply Range")
+
+        shell._commit_marker_update(original, candidate, "Nudge marker end", "Marker nudged")
+
+        self.assertTrue(shell._marker_thumbnail_dirty)
 
 
     def test_marker_color_cell_is_read_only_without_disabling_other_columns(self):
