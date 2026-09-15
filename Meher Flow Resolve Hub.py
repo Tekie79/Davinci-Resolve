@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DaVinci Resolve menu entry for Meher Flow Resolve Hub v0.3.20."""
+"""DaVinci Resolve menu entry for Meher Flow Resolve Hub v0.3.22."""
 
 import sys
 import os
@@ -32,7 +32,7 @@ for location in (_script_directory(), _runtime_directory()):
     if str(location) not in sys.path:
         sys.path.insert(0, str(location))
 
-WINDOW_ID = "com.meher-flow.resolve-hub.v0320"
+WINDOW_ID = "com.meher-flow.resolve-hub.v0322"
 
 
 def _raise_existing(namespace):
