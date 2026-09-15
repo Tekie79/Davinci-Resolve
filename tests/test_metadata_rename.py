@@ -19,6 +19,12 @@ class MetadataRenameTests(unittest.TestCase):
         self.assertEqual(metadata_operation("ABC", "Find / Replace", "B", "x"), "AxC")
         self.assertEqual(metadata_operation("A", "Clear", ""), "")
 
+    def test_copy_missing_metadata_field_copies_blank_not_field_name(self):
+        service = MetadataService()
+        record = service.build_records([FakeClip("1", "One", {"Scene": "12"})])[0]
+        preview = service.preview_batch([record], "Scene", "Copy Field", copy_field="Shot")
+        self.assertEqual(preview.changes[0].after, "")
+
     def test_metadata_preview_fill_blanks_and_verified_apply(self):
         service = MetadataService(); records = service.build_records([FakeClip("1", "One", {"Scene": ""}), FakeClip("2", "Two", {"Scene": "9"})])
         preview = service.preview_batch(records, "Scene", "Set", "12", blanks_only=True)

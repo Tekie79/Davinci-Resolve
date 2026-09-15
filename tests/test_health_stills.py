@@ -55,5 +55,43 @@ class HealthStillTests(unittest.TestCase):
             result = service.execute_queue(queue, folder, import_to_bin=False)
             self.assertTrue(result.success); self.assertTrue(Path(queue[0].output_path).is_file()); self.assertEqual(timeline.GetCurrentTimecode(), original)
 
+    def test_batch_capture_waits_for_each_requested_frame(self):
+        class DelayedTimeline(FakeTimeline):
+            def __init__(self, items):
+                super().__init__(items)
+                self.pending = None
+                self.polls = 0
+
+            def SetCurrentTimecode(self, value):
+                self.pending = str(value)
+                self.polls = 0
+                return True
+
+            def GetCurrentTimecode(self):
+                if self.pending is not None:
+                    self.polls += 1
+                    if self.polls >= 2:
+                        self.timecode = self.pending
+                        self.pending = None
+                return self.timecode
+
+        class FrameProject(FakeProject):
+            def ExportCurrentFrameAsStill(self, path):
+                Path(path).write_text(self.timeline.GetCurrentTimecode(), encoding="utf-8")
+                return True
+
+        clip = FakeClip("c", "Clip")
+        items = [FakeTimelineItem(clip, 100, 124), FakeTimelineItem(clip, 148, 172)]
+        timeline = DelayedTimeline(items)
+        project = FrameProject(timeline, FakeMediaPool(FakeFolder()))
+        resolve = FakeResolve(project)
+        service = StillService(resolve, ResolveContextService(resolve))
+        queue = service.queue_from_timeline_items(items, "First", "{Index}", 24, "Project", "Timeline", timeline)
+        with tempfile.TemporaryDirectory() as folder:
+            result = service.execute_queue(queue, folder, import_to_bin=False)
+            self.assertTrue(result.success)
+            frames = [Path(item.output_path).read_text(encoding="utf-8") for item in queue]
+            self.assertEqual(frames, ["01:00:00:00", "01:00:02:00"])
+
 
 if __name__ == "__main__": unittest.main()

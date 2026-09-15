@@ -71,5 +71,41 @@ class MarkerServiceTests(unittest.TestCase):
         self.assertTrue(deleted.success); self.assertNotIn(10, timeline.markers)
         self.assertTrue(history.undo().success); self.assertIn(10, timeline.markers)
 
+    def test_add_accepts_resolve_none_return_when_marker_was_written(self):
+        class NoneReturningTimeline(FakeTimeline):
+            def AddMarker(self, frame, color, name, note, duration, custom_data=""):
+                super().AddMarker(frame, color, name, note, duration, custom_data)
+                return None
+
+        timeline = NoneReturningTimeline()
+        result = self.service(timeline).add_marker(timeline, 20, "Green", "New")
+        self.assertTrue(result.success)
+        self.assertEqual(timeline.markers[20]["name"], "New")
+
+    def test_replace_and_delete_accept_none_return_after_verified_write(self):
+        class NoneReturningTimeline(FailingMarkerTimeline):
+            def DeleteMarkerAtFrame(self, frame):
+                super().DeleteMarkerAtFrame(frame)
+                return None
+
+            def AddMarker(self, frame, color, name, note, duration, custom_data=""):
+                super().AddMarker(frame, color, name, note, duration, custom_data)
+                return None
+
+        timeline = NoneReturningTimeline(fail_new=False)
+        service = self.service(timeline)
+        original = record_for(timeline)
+        replacement = original.copy(frame=20, start_frame=20, end_frame=21, name="Updated")
+        result = service.replace_marker(original, replacement)
+        self.assertTrue(result.success)
+        self.assertIn(20, timeline.markers)
+        deleted = service.apply_preview(service.preview_batch([replacement], "delete", "Set", ""))
+        self.assertTrue(deleted.success)
+        self.assertNotIn(20, timeline.markers)
+
+    def test_marker_lookup_accepts_numeric_string_keys(self):
+        marker = {"color": "Green", "name": "New", "note": "", "duration": 1, "customData": ""}
+        self.assertIs(MarkerService._marker_at_frame({"20.0": marker}, 20), marker)
+
 
 if __name__ == "__main__": unittest.main()

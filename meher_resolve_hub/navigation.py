@@ -1,5 +1,6 @@
 """Timeline navigation with explicit return-position support."""
 
+import time
 from dataclasses import dataclass
 
 from .models.operation import OperationResult
@@ -18,6 +19,18 @@ class NavigationEngine:
         self.context_service = context_service
         self.state = NavigationState()
 
+    @staticmethod
+    def _wait_for_timecode(timeline, target, timeout=0.75):
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            try:
+                actual = str(timeline.GetCurrentTimecode() or "")
+            except Exception:
+                return ""
+            if actual == str(target) or time.monotonic() >= deadline:
+                return actual
+            time.sleep(0.02)
+
     def set_playhead(self, timecode, remember=True):
         context = self.context_service.refresh_context()
         if not context.timeline:
@@ -26,11 +39,11 @@ class NavigationEngine:
             self.state.timeline_id = context.timeline_id
             self.state.previous_timecode = context.current_timecode
         try:
-            success = bool(context.timeline.SetCurrentTimecode(str(timecode)))
-            actual = str(context.timeline.GetCurrentTimecode() or "")
+            context.timeline.SetCurrentTimecode(str(timecode))
+            actual = self._wait_for_timecode(context.timeline, str(timecode))
         except Exception as exc:
             return OperationResult(False, failed=1, errors=[str(exc)])
-        if not success or actual != str(timecode):
+        if actual != str(timecode):
             return OperationResult(False, failed=1, errors=["Resolve did not move to %s." % timecode])
         return OperationResult(True, changed=1)
 
@@ -55,4 +68,3 @@ class NavigationEngine:
             return None, -1
         index = max(0, min(len(items) - 1, int(current_index) + int(direction)))
         return items[index], index
-

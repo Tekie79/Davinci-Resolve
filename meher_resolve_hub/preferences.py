@@ -11,7 +11,7 @@ from .constants import DEFAULT_MARKER_PRESETS
 
 DEFAULTS = {
     "general": {"restore_last_workspace": True, "restore_window_geometry": True, "default_selection_source": "Timeline Selection", "confirm_destructive_batch": True, "last_workspace": "Markers", "window_geometry": [120, 80, 1240, 780]},
-    "thumbnails": {"enabled": True, "cache_folder": "", "width": 160, "height": 90},
+    "thumbnails": {"enabled": True, "cache_folder": "", "width": 960, "height": 540},
     "markers": {"default_duration": 1, "nudge_steps": [1, 5, 10], "presets": DEFAULT_MARKER_PRESETS},
     "metadata": {"required_fields": ["Scene", "Take"]},
     "stills": {"default_output_folder": "", "default_target_bin": "current", "naming_template": "{Timeline}_{Timecode}_{Index}"},

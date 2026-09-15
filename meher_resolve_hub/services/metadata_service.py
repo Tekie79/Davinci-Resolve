@@ -120,7 +120,7 @@ class MetadataService:
                 changes.append(Change(record.unique_id, record.name, field, before, before, "Unchanged", source=record))
                 continue
             try:
-                other = record.metadata.get(copy_field, replacement) if operation == "Copy Field" else replacement
+                other = record.metadata.get(copy_field, "") if operation == "Copy Field" else replacement
                 after = metadata_operation(before, operation, value, other)
                 status = "Unchanged" if before == after else "Ready"
             except ValueError:
@@ -192,4 +192,3 @@ class MetadataService:
                     after = str(value or "")
                     changes.append(Change(record.unique_id, record.name, field, before, after, "Ready" if before != after else "Unchanged", source=record))
         return PreviewSummary(changes)
-

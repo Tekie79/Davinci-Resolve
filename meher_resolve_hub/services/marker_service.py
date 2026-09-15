@@ -104,6 +104,18 @@ class MarkerService:
         return ""
 
     @staticmethod
+    def _marker_at_frame(markers, frame):
+        """Read a Resolve marker without depending on its numeric key type."""
+        target = int(frame)
+        for key, value in dict(markers or {}).items():
+            try:
+                if int(round(float(key))) == target:
+                    return value
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
     def _snapshot(record):
         return {
             "scope_type": record.scope_type, "scope_id": record.scope_id,
@@ -144,7 +156,7 @@ class MarkerService:
             markers = dict(timeline.GetMarkers() or {})
         except Exception as exc:
             return OperationResult(False, failed=1, errors=["Could not read current markers: %s" % exc])
-        current = markers.get(original.frame)
+        current = self._marker_at_frame(markers, original.frame)
         if not self._matches(current, original):
             return OperationResult(False, failed=1, errors=["The marker changed in Resolve. Refresh before editing."])
         if candidate.start_frame != original.frame and candidate.start_frame in markers:
@@ -152,29 +164,30 @@ class MarkerService:
         if self._snapshot(original) == self._snapshot(candidate):
             return OperationResult(True, unchanged=1)
         try:
-            deleted = bool(timeline.DeleteMarkerAtFrame(original.frame))
+            timeline.DeleteMarkerAtFrame(original.frame)
+            deleted = self._marker_at_frame(timeline.GetMarkers(), original.frame) is None
         except Exception:
             deleted = False
         if not deleted:
             return OperationResult(False, failed=1, errors=["Resolve did not delete the original marker."])
 
         try:
-            created = bool(timeline.AddMarker(candidate.start_frame, candidate.color, candidate.name, candidate.note, candidate.duration_frames, candidate.custom_data or ""))
-            verified = self._matches(dict(timeline.GetMarkers() or {}).get(candidate.start_frame), candidate)
+            timeline.AddMarker(candidate.start_frame, candidate.color, candidate.name, candidate.note, candidate.duration_frames, candidate.custom_data or "")
+            verified = self._matches(self._marker_at_frame(timeline.GetMarkers(), candidate.start_frame), candidate)
         except Exception:
-            created, verified = False, False
-        if created and verified:
+            verified = False
+        if verified:
             if record_history and self.history:
                 self.history.add(OperationRecord("marker", label, [original.stable_key], {original.stable_key: self._snapshot(original)}, {original.stable_key: self._snapshot(candidate)}))
             return OperationResult(True, changed=1, details=[{"before": self._snapshot(original), "after": self._snapshot(candidate)}])
 
         try:
             # Remove an unverified partial replacement before restoring.
-            replacement = dict(timeline.GetMarkers() or {}).get(candidate.start_frame)
+            replacement = self._marker_at_frame(timeline.GetMarkers(), candidate.start_frame)
             if replacement:
                 timeline.DeleteMarkerAtFrame(candidate.start_frame)
-            restored = bool(timeline.AddMarker(original.frame, original.color, original.name, original.note, original.duration_frames, original.custom_data or ""))
-            rollback_verified = restored and self._matches(dict(timeline.GetMarkers() or {}).get(original.frame), original)
+            timeline.AddMarker(original.frame, original.color, original.name, original.note, original.duration_frames, original.custom_data or "")
+            rollback_verified = self._matches(self._marker_at_frame(timeline.GetMarkers(), original.frame), original)
         except Exception:
             rollback_verified = False
         if rollback_verified:
@@ -191,10 +204,12 @@ class MarkerService:
         if error:
             return OperationResult(False, failed=1, errors=[error])
         try:
-            if frame in dict(timeline.GetMarkers() or {}):
+            if self._marker_at_frame(timeline.GetMarkers(), frame):
                 return OperationResult(False, failed=1, errors=["A marker already exists at the playhead."])
-            created = bool(timeline.AddMarker(frame, record.color, record.name, record.note, record.duration_frames, custom_data or ""))
-            verified = created and self._matches(dict(timeline.GetMarkers() or {}).get(frame), record)
+            # Some Resolve bindings return None even after a successful write.
+            # The authoritative result is the marker read back from the timeline.
+            timeline.AddMarker(frame, record.color, record.name, record.note, record.duration_frames, custom_data or "")
+            verified = self._matches(self._marker_at_frame(timeline.GetMarkers(), frame), record)
         except Exception as exc:
             return OperationResult(False, failed=1, errors=["Resolve could not add the marker: %s" % exc])
         if not verified:
@@ -287,14 +302,16 @@ class MarkerService:
             record = change.source
             if change.field == "delete":
                 record = change.source
+                valid = False
                 try:
                     markers = dict(record.source_object.GetMarkers() or {})
-                    valid = self._matches(markers.get(record.frame), record)
-                    deleted = valid and bool(record.source_object.DeleteMarkerAtFrame(record.frame))
-                    verified = record.frame not in dict(record.source_object.GetMarkers() or {})
+                    valid = self._matches(self._marker_at_frame(markers, record.frame), record)
+                    if valid:
+                        record.source_object.DeleteMarkerAtFrame(record.frame)
+                    verified = self._marker_at_frame(record.source_object.GetMarkers(), record.frame) is None
                 except Exception:
-                    deleted, verified = False, False
-                if deleted and verified:
+                    verified = False
+                if valid and verified:
                     result.changed += 1
                     keys.append(record.stable_key)
                     before[record.stable_key] = self._snapshot(record)
@@ -335,14 +352,14 @@ class MarkerService:
                 continue
             if before.get("deleted"):
                 current = current_by_state.get((after["start_frame"], after["name"], after["color"]))
-                if not current or not self._matches(dict(current.source_object.GetMarkers() or {}).get(current.frame), current):
+                if not current or not self._matches(self._marker_at_frame(current.source_object.GetMarkers(), current.frame), current):
                     result.failed += 1; result.errors.append("The added marker no longer matches the value Resolve Hub applied."); continue
                 try:
-                    deleted = bool(current.source_object.DeleteMarkerAtFrame(current.frame))
-                    verified = current.frame not in dict(current.source_object.GetMarkers() or {})
+                    current.source_object.DeleteMarkerAtFrame(current.frame)
+                    verified = self._marker_at_frame(current.source_object.GetMarkers(), current.frame) is None
                 except Exception:
-                    deleted, verified = False, False
-                if deleted and verified: result.changed += 1
+                    verified = False
+                if verified: result.changed += 1
                 else: result.failed += 1; result.errors.append("Resolve could not remove the added marker.")
                 continue
             if after.get("deleted"):
@@ -351,17 +368,17 @@ class MarkerService:
                     result.failed += 1; result.errors.append("Open the timeline used by this marker operation."); continue
                 try:
                     current_scope = proxy_id(timeline, context.timeline_id)
-                    occupied = before["start_frame"] in dict(timeline.GetMarkers() or {})
+                    occupied = self._marker_at_frame(timeline.GetMarkers(), before["start_frame"]) is not None
                 except Exception:
                     current_scope, occupied = "", True
                 if current_scope != before.get("scope_id") or occupied:
                     result.failed += 1; result.errors.append("The deleted marker cannot be restored safely in the current timeline."); continue
                 original = MarkerRecord(source_object=timeline, **before)
                 try:
-                    restored = bool(timeline.AddMarker(original.frame, original.color, original.name, original.note, original.duration_frames, original.custom_data or ""))
-                    verified = restored and self._matches(dict(timeline.GetMarkers() or {}).get(original.frame), original)
+                    timeline.AddMarker(original.frame, original.color, original.name, original.note, original.duration_frames, original.custom_data or "")
+                    verified = self._matches(self._marker_at_frame(timeline.GetMarkers(), original.frame), original)
                 except Exception:
-                    restored, verified = False, False
+                    verified = False
                 if verified: result.changed += 1
                 else: result.failed += 1; result.errors.append("Resolve could not restore the deleted marker.")
                 continue

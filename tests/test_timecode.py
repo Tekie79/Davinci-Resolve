@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from meher_resolve_hub.timecode import TimecodeError, clamp_frame, frames_to_timecode, nudge_frame, timecode_to_frames
+from meher_resolve_hub.timecode import TimecodeError, clamp_frame, duration_display_to_frames, frames_to_timecode, nudge_frame, timecode_to_frames
 
 
 class TimecodeTests(unittest.TestCase):
@@ -23,9 +23,20 @@ class TimecodeTests(unittest.TestCase):
     def test_invalid_drop_rate_is_rejected(self):
         with self.assertRaises(TimecodeError): timecode_to_frames("00:01:00;00", 24)
 
+    def test_skipped_drop_frame_numbers_are_rejected(self):
+        with self.assertRaises(TimecodeError):
+            timecode_to_frames("00:01:00;00", 29.97)
+        self.assertEqual(timecode_to_frames("00:10:00;00", 29.97), 17982)
+
     def test_nudge_and_clamp(self):
         self.assertEqual(nudge_frame(5, -10, 0, 100), 0)
         self.assertEqual(clamp_frame(110, 0, 100), 100)
+
+    def test_duration_accepts_frames_or_timecode(self):
+        self.assertEqual(duration_display_to_frames("70", 24), 70)
+        self.assertEqual(duration_display_to_frames("00:00:02:10", 24), 58)
+        with self.assertRaises(TimecodeError):
+            duration_display_to_frames("0", 24)
 
 
 if __name__ == "__main__": unittest.main()

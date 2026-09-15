@@ -1,7 +1,7 @@
 """Settings workspace layout."""
 
 from .. import theme
-from .components import button, combo, line_edit, section, tree
+from .components import button, color_selector, combo, line_edit, section, tree
 
 
 def build(ui):
@@ -24,7 +24,7 @@ def build(ui):
                 ui.Label({"Text": "MARKER PRESETS", "StyleSheet": theme.SECTION, "Weight": 0}),
                 ui.HGroup({"Spacing": 5, "Weight": 0}, [ui.Label({"Text": "Default duration", "StyleSheet": theme.SUBTITLE}), line_edit(ui, "SettingMarkerDuration", "frames")]),
                 tree(ui, "PresetTree", ("#", "Preset", "Color", "Default Name", "Duration"), 1),
-                ui.HGroup({"Spacing": 5, "Weight": 0}, [line_edit(ui, "PresetName", "Preset"), combo(ui, "PresetColor"), line_edit(ui, "PresetDefaultName", "Default marker name"), line_edit(ui, "PresetDuration", "Frames")]),
+                ui.HGroup({"Spacing": 5, "Weight": 0}, [line_edit(ui, "PresetName", "Preset"), color_selector(ui, "PresetColor", "Blue"), line_edit(ui, "PresetDefaultName", "Default marker name"), line_edit(ui, "PresetDuration", "Frames")]),
                 ui.HGroup({"Spacing": 5, "Weight": 0}, [button(ui, "AddPreset", "Add"), button(ui, "UpdatePreset", "Update"), button(ui, "MovePresetUp", "Up"), button(ui, "MovePresetDown", "Down"), button(ui, "DeletePreset", "Delete")]),
             ]),
             ui.VGroup({"Spacing": 7, "StyleSheet": theme.SURFACE}, [

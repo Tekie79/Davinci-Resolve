@@ -1,18 +1,20 @@
 """Single-window Resolve Hub shell and workspace coordination."""
 
 import json
+import time
 from pathlib import Path
 
 from .. import theme
-from ..constants import APP_NAME, APP_SUBTITLE, APP_VERSION, MAIN_WINDOW_ID, MARKER_COLORS, PREVIEW_WINDOW_ID, SELECTION_MODES, STILL_WINDOW_ID, WORKSPACES
+from ..constants import APP_NAME, APP_SUBTITLE, APP_VERSION, COLOR_PICKER_WINDOW_ID, MAIN_WINDOW_ID, MARKER_COLORS, PREVIEW_WINDOW_ID, SELECTION_MODES, STILL_WINDOW_ID, WORKSPACES
+from ..marker_colors import hex_color_rgba, marker_color_dot_style, marker_color_rgba
 from ..models.operation import Change, OperationResult, PreviewSummary
 from ..preferences import user_data_dir, valid_window_geometry
 from ..selection import SelectionUnavailable
 from ..services.still_service import StillError, default_output_folder
-from ..timecode import duration_frames_to_display, timeline_frame_to_timecode, timeline_timecode_to_frame
+from ..timecode import duration_display_to_frames, duration_frames_to_display, timeline_frame_to_timecode, timeline_timecode_to_frame
 from ..utils import collect_bins
 from . import health_workspace, history_workspace, marker_workspace, metadata_workspace, rename_workspace, settings_workspace, still_workspace
-from .components import button, combo, line_edit, tree
+from .components import button, color_option, combo, line_edit, tree
 
 
 class ResolveHubShell:
@@ -26,6 +28,7 @@ class ResolveHubShell:
         self.selection = None
         self.marker_records = []
         self.filtered_markers = []
+        self.metadata_all_records = []
         self.metadata_records = []
         self.rename_preview = None
         self.marker_preview = None
@@ -37,6 +40,18 @@ class ResolveHubShell:
         self.capture_context = None
         self.preview_data = None
         self.preview_callback = None
+        self._marker_state = None
+        self._active_marker_frame = None
+        self._selected_marker_frames = set()
+        self._marker_selection_anchor = None
+        self._syncing_marker_selection = False
+        self._populating_marker_tree = False
+        self._syncing_marker_range_controls = False
+        self._loading_marker_thumbnail = False
+        self._color_values = {}
+        self._color_selection = {}
+        self._active_color_selector = None
+        self._running = False
         self._build_windows()
         self._fill_static_controls()
         self._bind_events()
@@ -47,18 +62,18 @@ class ResolveHubShell:
             existing.Show(); existing.Raise(); raise SystemExit()
         geometry = valid_window_geometry(self.app.preferences.get("general", "window_geometry"))
         self.window = self.dispatcher.AddWindow(
-            {"ID": MAIN_WINDOW_ID, "Geometry": geometry, "WindowTitle": "Resolve Hub"},
+            {"ID": MAIN_WINDOW_ID, "Geometry": geometry, "WindowTitle": "Resolve Hub", "Events": {"Close": True, "FocusIn": True, "Resize": True}},
             [self.ui.HGroup({"Spacing": 0, "StyleSheet": theme.ROOT}, [
                 self.ui.VGroup({"Weight": 0, "MinimumSize": [154, 620], "Spacing": 5, "StyleSheet": theme.SURFACE}, [
-                    self.ui.Label({"Text": "MEHER FLOW", "StyleSheet": theme.SECTION}),
-                    self.ui.Label({"Text": "RESOLVE HUB", "StyleSheet": theme.TITLE}),
+                    self.ui.Label({"Text": "MEHER FLOW", "StyleSheet": theme.SECTION, "Weight": 0}),
+                    self.ui.Label({"Text": "RESOLVE HUB", "StyleSheet": theme.TITLE, "Weight": 0}),
                     self.ui.VGap(8),
-                    *[self.ui.Button({"ID": "Nav" + name, "Text": name, "StyleSheet": theme.NAV}) for name in WORKSPACES[:5]],
+                    *[self.ui.Button({"ID": "Nav" + name, "Text": name, "StyleSheet": theme.NAV, "MinimumSize": [0, 42], "MaximumSize": [10000, 42], "Weight": 0}) for name in WORKSPACES[:5]],
                     self.ui.VGap(0, 1),
-                    self.ui.Label({"Text": "──────────", "StyleSheet": theme.SUBTITLE}),
-                    self.ui.Button({"ID": "NavHistory", "Text": "History", "StyleSheet": theme.NAV}),
-                    self.ui.Button({"ID": "NavSettings", "Text": "Settings", "StyleSheet": theme.NAV}),
-                    self.ui.Label({"Text": "v" + APP_VERSION, "StyleSheet": theme.SUBTITLE}),
+                    self.ui.Label({"Text": "──────────", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
+                    self.ui.Button({"ID": "NavHistory", "Text": "History", "StyleSheet": theme.NAV, "MinimumSize": [0, 42], "MaximumSize": [10000, 42], "Weight": 0}),
+                    self.ui.Button({"ID": "NavSettings", "Text": "Settings", "StyleSheet": theme.NAV, "MinimumSize": [0, 42], "MaximumSize": [10000, 42], "Weight": 0}),
+                    self.ui.Label({"Text": "v" + APP_VERSION, "StyleSheet": theme.SUBTITLE, "Weight": 0}),
                 ]),
                 self.ui.VGroup({"Weight": 1, "Spacing": 7}, [
                     self.ui.HGroup({"Spacing": 7, "StyleSheet": theme.SURFACE, "Weight": 0}, [
@@ -69,6 +84,7 @@ class ResolveHubShell:
                         self.ui.Label({"ID": "ContextTimecode", "Text": "—", "StyleSheet": theme.SECTION}),
                         button(self.ui, "ReturnPosition", "Return"),
                         button(self.ui, "RefreshContext", "Refresh"),
+                        button(self.ui, "CloseHub", "×"),
                     ]),
                     self.ui.HGroup({"Spacing": 5, "StyleSheet": theme.SURFACE, "Weight": 0}, [
                         self.ui.Label({"Text": "Selection", "StyleSheet": theme.SECTION}),
@@ -87,8 +103,21 @@ class ResolveHubShell:
                 ]),
             ])],
         )
+        self.color_window = self.dispatcher.AddWindow(
+            {
+                "ID": COLOR_PICKER_WINDOW_ID,
+                "Geometry": [400, 240, 260, 520],
+                "WindowTitle": "Select marker color",
+                "WindowFlags": {"Popup": True, "FramelessWindowHint": True},
+                "Events": {"Close": True},
+            },
+            [self.ui.VGroup({"Spacing": 1, "StyleSheet": theme.COLOR_PICKER}, [
+                color_option(self.ui, "All"),
+                *[color_option(self.ui, color) for color in MARKER_COLORS],
+            ])],
+        )
         self.preview_window = self.dispatcher.AddWindow(
-            {"ID": PREVIEW_WINDOW_ID, "Geometry": [250, 150, 900, 520], "WindowTitle": "Preview Changes"},
+            {"ID": PREVIEW_WINDOW_ID, "Geometry": [250, 150, 900, 520], "WindowTitle": "Preview Changes", "Events": {"Close": True}},
             [self.ui.VGroup({"Spacing": 7, "StyleSheet": theme.ROOT}, [
                 self.ui.Label({"ID": "PreviewTitle", "Text": "Preview Changes", "StyleSheet": theme.TITLE, "Weight": 0}),
                 self.ui.Label({"ID": "PreviewSummary", "Text": "", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
@@ -97,7 +126,7 @@ class ResolveHubShell:
             ])],
         )
         self.still_window = self.dispatcher.AddWindow(
-            {"ID": STILL_WINDOW_ID, "Geometry": [260, 140, 820, 540], "WindowTitle": "Save Still"},
+            {"ID": STILL_WINDOW_ID, "Geometry": [260, 140, 820, 540], "WindowTitle": "Save Still", "Events": {"Close": True}},
             [self.ui.VGroup({"Spacing": 8, "StyleSheet": theme.ROOT}, [
                 self.ui.Label({"Text": "Save Still", "StyleSheet": theme.TITLE, "Weight": 0}), self.ui.Label({"Text": "Name and save.", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
                 self.ui.HGroup({"Spacing": 5, "StyleSheet": theme.SURFACE, "Weight": 0}, [line_edit(self.ui, "CapturedTimeline", read_only=True), line_edit(self.ui, "CapturedTimecode", read_only=True), line_edit(self.ui, "CapturedPage", read_only=True)]),
@@ -122,11 +151,125 @@ class ResolveHubShell:
             if value == current: selected = index
         control.CurrentIndex = selected
 
+    def _fill_marker_color_combo(self, identity, values, current=None):
+        """Fill a CSS color selector without image-backed combo icons."""
+        choices = [str(value) for value in values]
+        self._color_values[identity] = choices
+        selected = str(current) if current is not None else (choices[0] if choices else "")
+        if selected not in choices and choices:
+            selected = choices[0]
+        self._color_selection[identity] = selected
+        self._update_marker_color_dot(identity)
+
+    def _update_marker_color_dot(self, combo_id):
+        dot_ids = {
+            "MarkerColor": "MarkerColorDot",
+            "MarkerEditColor": "MarkerEditColorDot",
+            "PresetColor": "PresetColorDot",
+        }
+        dot_id = dot_ids.get(combo_id)
+        if not dot_id:
+            return
+        items = self.window.GetItems()
+        dot = items.get(dot_id)
+        value = self._color_selection.get(combo_id, "All")
+        control = items.get(combo_id)
+        if control:
+            control.Text = value
+        if dot:
+            dot.StyleSheet = marker_color_dot_style(value)
+
+    @staticmethod
+    def _rect_value(rect, index, default=0):
+        try:
+            return int(rect[index])
+        except Exception:
+            return default
+
+    @classmethod
+    def _geometry_values(cls, rect, default=(120, 80, 1240, 780)):
+        """Normalize UIManager's 1-based map and ordinary four-item lists."""
+        if isinstance(rect, (list, tuple)) and len(rect) >= 4:
+            try:
+                return [int(rect[index]) for index in range(4)]
+            except (TypeError, ValueError):
+                return list(default)
+        return [cls._rect_value(rect, index, default[index - 1]) for index in range(1, 5)]
+
+    def _open_color_picker(self, identity, anchor=None):
+        choices = self._color_values.get(identity, [])
+        if not choices:
+            return
+        self._active_color_selector = identity
+        popup_items = self.color_window.GetItems()
+        selected = self._color_selection.get(identity, choices[0])
+        for color in ("All",) + tuple(MARKER_COLORS):
+            token = color.replace(" ", "")
+            row = popup_items.get("ColorChoice" + token + "Row")
+            option = popup_items.get("ColorChoice" + token)
+            visible = color in choices
+            if row:
+                row.Visible = visible
+                row.StyleSheet = theme.COLOR_OPTION_ROW_ACTIVE if color == selected else theme.COLOR_OPTION_ROW
+            if option:
+                option.StyleSheet = theme.COLOR_OPTION_ACTIVE if color == selected else theme.COLOR_OPTION
+
+        source_items = self.window.GetItems()
+        field = source_items.get(identity + "Field") or source_items.get(identity)
+        anchor_height = 30
+        if anchor:
+            field = source_items["MarkerTree"]
+            item = anchor.get("item")
+            rect = field.VisualItemRect(item)
+            column = int(anchor.get("column", 2))
+            x_offset = sum(int(field.ColumnWidth[index]) for index in range(column))
+            anchor_height = max(24, self._rect_value(rect, 4, 34))
+            point = field.MapToGlobal([x_offset, self._rect_value(rect, 2, 0) + anchor_height])
+            width = max(190, int(field.ColumnWidth[column]))
+        else:
+            width = max(220, int(field.Width()))
+            point = field.MapToGlobal([0, int(field.Height())])
+        height = min(480, 10 + (28 * len(choices)))
+        x = self._rect_value(point, 1, 400)
+        y = self._rect_value(point, 2, 240) + 2
+        main_geometry = self.window.Geometry
+        top = self._rect_value(main_geometry, 2, 0)
+        bottom = top + self._rect_value(main_geometry, 4, 900)
+        if y + height > bottom - 8:
+            y = max(top + 8, y - height - anchor_height - 4)
+        self.color_window.Geometry = [x, y, width, height]
+        self.color_window.RecalcLayout()
+        self.color_window.Show()
+        self.color_window.Raise()
+
+    def _hide_color_picker(self, event=None):
+        try:
+            self.color_window.Hide()
+        except Exception:
+            pass
+        self._active_color_selector = None
+        return True
+
+    def _choose_marker_color(self, color):
+        identity = self._active_color_selector
+        if not identity or color not in self._color_values.get(identity, []):
+            return
+        self._color_selection[identity] = color
+        self._update_marker_color_dot(identity)
+        self._hide_color_picker()
+        self.window.Raise()
+        if identity == "MarkerColor":
+            self._filter_markers()
+
+    def _marker_filter_color_changed(self, event=None):
+        self._update_marker_color_dot("MarkerColor")
+        self._filter_markers()
+
     def _fill_static_controls(self):
-        self._fill_combo("MarkerColor", ["All"] + list(MARKER_COLORS), "All")
+        self._fill_marker_color_combo("MarkerColor", ["All"] + list(MARKER_COLORS), "All")
         self._fill_combo("MarkerType", ["All", "Point", "Range", "With Notes", "Without Notes"], "All")
         self._fill_combo("MarkerSort", ["Timecode", "Name", "Color", "Duration"], "Timecode")
-        self._fill_combo("MarkerEditColor", MARKER_COLORS, "Blue")
+        self._fill_marker_color_combo("MarkerEditColor", MARKER_COLORS, "Blue")
         self._fill_combo("MarkerBatchField", ["Name", "Color", "Notes", "Range", "Position", "Delete"], "Color")
         self._fill_combo("MarkerBatchOperation", ["Set", "Prefix", "Suffix", "Find/Replace", "Append", "Prepend", "Clear", "Set Duration", "Extend Start", "Extend End", "Contract Start", "Contract End", "Move"], "Set")
         presets = [item.get("name", "Preset") for item in self.app.preferences.get("markers", "presets", [])]
@@ -141,13 +284,28 @@ class ResolveHubShell:
         self._fill_combo("StillClipPosition", ["First", "Middle", "Last"], "First")
         self._fill_combo("HealthCategory", ["All"], "All")
         self._fill_combo("SettingDefaultSelection", list(SELECTION_MODES), self.selection_mode)
-        self._fill_combo("PresetColor", MARKER_COLORS, "Blue")
+        self._fill_marker_color_combo("PresetColor", MARKER_COLORS, "Blue")
         items = self.window.GetItems(); prefs = self.app.preferences
+        main_tree_headers = {
+            "MarkerTree": ("#", "Name", "Color", "Start", "End", "Duration", "Notes"),
+            "MetadataClipTree": ("#", "Clip", "Scene", "Take", "Camera", "Reel"),
+            "RenameTree": ("#", "Current Name", "New Name", "Status"),
+            "StillTree": ("#", "Source", "Frame", "Output", "Status"),
+            "HealthTree": ("#", "Category", "Severity", "Clip", "Problem", "Expected", "Actual"),
+            "HistoryTree": ("#", "Time", "Operation", "Objects", "Undo"),
+            "PresetTree": ("#", "Preset", "Color", "Default Name", "Duration"),
+        }
+        for identity, headers in main_tree_headers.items():
+            items[identity].HeaderHidden = False
+            items[identity].SetHeaderLabels(list(headers))
+        preview_tree = self.preview_window.GetItems()["PreviewTree"]
+        preview_tree.HeaderHidden = False
+        preview_tree.SetHeaderLabels(["Object", "Field", "Before", "After", "Status"])
         for identity, labels in (("MarkerEditorTabs", ("Details", "Range", "Batch")), ("SettingsTabs", ("General", "Marker Presets", "Metadata & Stills"))):
             tab = items[identity]
             if tab.Count() == 0:
                 for label in labels: tab.AddTab(label)
-        items["RenameTemplate"].Text = "{Original}"
+        items["RenameTemplate"].Text = prefs.get("rename", "template", "{Original}")
         items["RenameStart"].Text = "1"; items["RenameWidth"].Text = "2"
         items["StillTemplate"].Text = prefs.get("stills", "naming_template", "{Timeline}_{Timecode}_{Index}")
         items["SettingRestoreWorkspace"].Checked = prefs.get("general", "restore_last_workspace", True)
@@ -165,8 +323,12 @@ class ResolveHubShell:
 
     def _bind_events(self):
         self.window.On[MAIN_WINDOW_ID].Close = self._close
+        self.window.On["CloseHub"].Clicked = self._close
+        self.window.On[MAIN_WINDOW_ID].FocusIn = self._sync_markers_if_changed
+        self.window.On[MAIN_WINDOW_ID].Resize = self._resize_marker_thumbnail
         self.preview_window.On[PREVIEW_WINDOW_ID].Close = self._cancel_preview
         self.still_window.On[STILL_WINDOW_ID].Close = self._cancel_save_still
+        self.color_window.On[COLOR_PICKER_WINDOW_ID].Close = self._hide_color_picker
         for index, name in enumerate(WORKSPACES):
             self.window.On["Nav" + name].Clicked = lambda event, workspace=name: self._switch_workspace(workspace)
         self.window.On["RefreshContext"].Clicked = self._refresh_context
@@ -181,12 +343,21 @@ class ResolveHubShell:
         self.preview_window.On["ConfirmPreview"].Clicked = self._confirm_preview
         # Marker events.
         for identity in ("RefreshMarkers",): self.window.On[identity].Clicked = self._refresh_markers
-        self.window.On["MarkerSearch"].TextChanged = self._refresh_markers
-        for identity in ("MarkerColor", "MarkerType", "MarkerSort"):
-            self.window.On[identity].CurrentIndexChanged = self._refresh_markers
-        self.window.On["MarkerTree"].ItemClicked = self._marker_selected
+        self.window.On["MarkerSearch"].TextChanged = self._filter_markers
+        for identity in ("MarkerType", "MarkerSort"):
+            self.window.On[identity].CurrentIndexChanged = self._filter_markers
+        for identity in ("MarkerColor", "MarkerEditColor", "PresetColor"):
+            self.window.On[identity].Clicked = lambda event, control=identity: self._open_color_picker(control)
+            self.window.On[identity + "Dot"].Clicked = lambda event, control=identity: self._open_color_picker(control)
+            self.window.On[identity + "Arrow"].Clicked = lambda event, control=identity: self._open_color_picker(control)
+        for color in ("All",) + tuple(MARKER_COLORS):
+            token = color.replace(" ", "")
+            self.color_window.On["ColorChoice" + token].Clicked = lambda event, value=color: self._choose_marker_color(value)
+            self.color_window.On["ColorChoice" + token + "Dot"].Clicked = lambda event, value=color: self._choose_marker_color(value)
+        self.window.On["MarkerTree"].ItemClicked = self._marker_clicked
         self.window.On["MarkerTree"].ItemSelectionChanged = self._marker_selected
-        self.window.On["MarkerTree"].ItemDoubleClicked = self._go_to_marker
+        self.window.On["MarkerTree"].ItemDoubleClicked = self._marker_double_clicked
+        self.window.On["MarkerTree"].ItemChanged = self._marker_tree_item_changed
         self.window.On["SelectAllMarkers"].Clicked = self._select_all_markers
         self.window.On["ClearMarkerSelection"].Clicked = self._clear_marker_selection
         self.window.On["PrevMarker"].Clicked = lambda event: self._step_marker(-1)
@@ -195,7 +366,10 @@ class ResolveHubShell:
         self.window.On["GoToMarkerEnd"].Clicked = self._go_to_marker_end
         self.window.On["SaveMarkerDetails"].Clicked = self._save_marker_details
         self.window.On["ClearMarkerNotes"].Clicked = self._clear_marker_notes
+        self.window.On["DeleteMarker"].Clicked = self._delete_marker
         self.window.On["SaveMarkerRange"].Clicked = self._save_marker_range
+        self.window.On["MarkerRangeStartSlider"].ValueChanged = lambda event: self._marker_range_slider_changed("start")
+        self.window.On["MarkerRangeEndSlider"].ValueChanged = lambda event: self._marker_range_slider_changed("end")
         self.window.On["SetMarkerStart"].Clicked = lambda event: self._set_marker_edge("start")
         self.window.On["SetMarkerEnd"].Clicked = lambda event: self._set_marker_edge("end")
         self.window.On["MoveMarkerPlayhead"].Clicked = self._move_marker_playhead
@@ -216,6 +390,9 @@ class ResolveHubShell:
                 self.window.On[edge + suffix].Clicked = lambda event, which=edge.lower(), delta=amount: self._nudge_marker(which, delta)
         # Metadata.
         self.window.On["RefreshMetadata"].Clicked = self._refresh_metadata
+        self.window.On["MetadataSearch"].TextChanged = self._filter_metadata
+        self.window.On["MetadataMissingField"].CurrentIndexChanged = self._filter_metadata
+        self.window.On["MetadataField"].CurrentIndexChanged = self._metadata_field_changed
         self.window.On["MetadataClipTree"].ItemClicked = self._metadata_selected
         self.window.On["MetadataPrevious"].Clicked = lambda event: self._step_metadata(-1)
         self.window.On["MetadataNext"].Clicked = lambda event: self._step_metadata(1)
@@ -269,6 +446,8 @@ class ResolveHubShell:
         self.window.On["DeletePreset"].Clicked = self._delete_preset
 
     def _combo_text(self, identity, window=None):
+        if window is None and identity in self._color_selection:
+            return self._color_selection[identity]
         control = (window or self.window).GetItems()[identity]
         try: return str(control.CurrentText)
         except Exception:
@@ -416,27 +595,224 @@ class ResolveHubShell:
         for row in rows:
             item = target.NewItem()
             for column, value in enumerate(row): item.Text[column] = str(value)
+            if identity == "MarkerTree":
+                try:
+                    flags = dict(item.GetFlags())
+                    flags["ItemIsEditable"] = True
+                    item.SetFlags(flags)
+                except Exception:
+                    pass
+                for column in range(len(row)):
+                    try:
+                        item.TextAlignment[column] = 132 if column == 0 else 129
+                        item.SizeHint[column] = [0, 34]
+                    except Exception:
+                        pass
             target.AddTopLevelItem(item)
 
+    @staticmethod
+    def _marker_table_column_widths(total_width):
+        width = max(620, int(total_width))
+        first_six = (
+            min(42, max(30, int(width * 0.05))),
+            min(240, max(96, int(width * 0.18))),
+            min(140, max(78, int(width * 0.13))),
+            min(150, max(92, int(width * 0.15))),
+            min(150, max(92, int(width * 0.15))),
+            min(145, max(92, int(width * 0.16))),
+        )
+        notes = max(100, width - sum(first_six) - 24)
+        return first_six + (notes,)
+
+    @staticmethod
+    def _proportional_column_widths(total_width, ratios):
+        usable = max(len(ratios) * 28, int(total_width) - 24)
+        widths = [max(28, int(usable * float(ratio))) for ratio in ratios]
+        difference = sum(widths) - usable
+        if difference > 0:
+            largest = max(range(len(widths)), key=widths.__getitem__)
+            widths[largest] = max(28, widths[largest] - difference)
+        elif difference < 0:
+            widths[-1] += -difference
+        return tuple(widths)
+
+    def _resize_other_tree_columns(self):
+        layouts = {
+            "MetadataClipTree": (0.05, 0.35, 0.14, 0.12, 0.17, 0.17),
+            "RenameTree": (0.06, 0.34, 0.42, 0.18),
+            "StillTree": (0.06, 0.23, 0.18, 0.39, 0.14),
+            "HealthTree": (0.05, 0.14, 0.10, 0.15, 0.26, 0.15, 0.15),
+            "HistoryTree": (0.06, 0.14, 0.46, 0.14, 0.20),
+            "PresetTree": (0.06, 0.23, 0.18, 0.35, 0.18),
+        }
+        items = self.window.GetItems()
+        for identity, ratios in layouts.items():
+            try:
+                control = items[identity]
+                widths = self._proportional_column_widths(int(control.Width()), ratios)
+                for column, width in enumerate(widths):
+                    control.ColumnWidth[column] = width
+            except Exception:
+                pass
+
+    def _resize_marker_table_columns(self):
+        try:
+            tree = self.window.GetItems()["MarkerTree"]
+            widths = self._marker_table_column_widths(int(tree.Width()))
+            for column, width in enumerate(widths):
+                tree.ColumnWidth[column] = width
+        except Exception:
+            pass
+
+    def _apply_marker_color_swatches(self):
+        """Keep the read-only marker color dot and label colored on selection."""
+        tree = self.window.GetItems()["MarkerTree"]
+        was_populating = self._populating_marker_tree
+        was_syncing = self._syncing_marker_selection
+        self._populating_marker_tree = True
+        self._syncing_marker_selection = True
+        try:
+            for index, marker in enumerate(self.filtered_markers):
+                try:
+                    item = tree.TopLevelItem(index)
+                    item.Selected = False
+                    color_text = "●  " + marker.color
+                    if item.Text[2] != color_text:
+                        item.Text[2] = color_text
+                    item.SetTextColor(2, marker_color_rgba(marker.color))
+                    selected = marker.start_frame in self._selected_marker_frames
+                    background = theme.COLORS["border_strong"] if selected else theme.COLORS["surface" if index % 2 == 0 else "surface_alt"]
+                    self._set_marker_row_background(item, background)
+                except Exception:
+                    continue
+        finally:
+            self._populating_marker_tree = was_populating
+            self._syncing_marker_selection = was_syncing
+
+    @staticmethod
+    def _set_marker_row_background(item, color):
+        value = hex_color_rgba(color)
+        for column in range(7):
+            try:
+                item.SetBackgroundColor(column, value)
+                continue
+            except Exception:
+                pass
+            try:
+                item.BackgroundColor[column] = value
+            except Exception:
+                pass
+
+    def _set_marker_selection(self, frames, active_frame=None):
+        available = {marker.start_frame for marker in self.filtered_markers}
+        selected = set()
+        for frame in frames:
+            try:
+                value = int(frame)
+            except (TypeError, ValueError):
+                continue
+            if value in available:
+                selected.add(value)
+        self._selected_marker_frames = selected
+        if active_frame in available:
+            self._active_marker_frame = int(active_frame)
+        self._apply_marker_color_swatches()
+        self.window.GetItems()["MarkerSelectionCount"].Text = "%d selected" % len(selected)
+
+    @staticmethod
+    def _marker_click_modifiers(event):
+        if not isinstance(event, dict):
+            return ""
+        value = event.get("modifiers", event.get("Modifiers", ""))
+        if isinstance(value, dict):
+            return " ".join(str(key) for key, enabled in value.items() if enabled).lower()
+        return str(value or "").lower()
+
     def _selected_markers(self):
-        indices = self._tree_selected_indices(self.window.GetItems()["MarkerTree"])
-        return [self.filtered_markers[index] for index in indices if 0 <= index < len(self.filtered_markers)]
+        selected = getattr(self, "_selected_marker_frames", set())
+        return [marker for marker in self.filtered_markers if marker.start_frame in selected]
 
     def _current_marker(self):
+        if self._active_marker_frame is not None:
+            active = next((marker for marker in self.filtered_markers if marker.start_frame == self._active_marker_frame), None)
+            if active:
+                return active
+        return self._tree_marker()
+
+    def _tree_marker(self):
         index = self._tree_current_index(self.window.GetItems()["MarkerTree"])
         return self.filtered_markers[index] if 0 <= index < len(self.filtered_markers) else None
+
+    def _marker_from_event(self, event):
+        item = None
+        if isinstance(event, dict):
+            item = event.get("item") or event.get("Item")
+        if item is not None:
+            try:
+                index = int(item.Text[0])
+                if 0 <= index < len(self.filtered_markers):
+                    return self.filtered_markers[index]
+            except Exception:
+                pass
+        return self._tree_marker()
 
     def _marker_timecode(self, marker, end=False):
         context = self.app.context.refresh_context(); fps = self.app.context.get_project_fps()
         frame = marker.end_frame if end else marker.start_frame
         return timeline_frame_to_timecode(context.timeline, int(context.timeline.GetStartFrame()) + frame, fps)
 
-    def _refresh_markers(self, event=None):
-        context = self.app.context.refresh_context()
+    @staticmethod
+    def _marker_state_signature(timeline_id, records):
+        return (
+            str(timeline_id or ""),
+            tuple(
+                (
+                    marker.start_frame,
+                    marker.end_frame,
+                    marker.color,
+                    marker.name,
+                    marker.note,
+                    marker.custom_data or "",
+                )
+                for marker in records
+            ),
+        )
+
+    @staticmethod
+    def _timeline_marker_state(context):
         if not context.timeline:
-            self.marker_records = []; self.filtered_markers = []; self._populate_tree("MarkerTree", []); self._warning("MarkerWarning", "Open a timeline to use Marker Manager."); return
+            return (str(context.timeline_id or ""), ())
+        try:
+            raw = dict(context.timeline.GetMarkers() or {})
+        except Exception:
+            return None
+        values = []
+        for frame, marker in raw.items():
+            marker = dict(marker or {})
+            start = int(round(float(frame)))
+            duration = max(1, int(marker.get("duration", marker.get("Duration", 1)) or 1))
+            values.append((
+                start,
+                start + duration - 1,
+                str(marker.get("color", marker.get("Color", "Blue"))),
+                str(marker.get("name", marker.get("Name", ""))),
+                str(marker.get("note", marker.get("Note", ""))),
+                str(marker.get("customData", marker.get("custom_data", "")) or ""),
+            ))
+        return (str(context.timeline_id or ""), tuple(sorted(values)))
+
+    def _refresh_markers(self, event=None, select_frame=None, context=None, records=None):
+        current = self._current_marker()
+        selected_frames = set(self._selected_marker_frames)
+        preferred_frame = select_frame if select_frame is not None else (current.start_frame if current else None)
+        if select_frame is not None:
+            selected_frames = {select_frame}
+        context = context or self.app.context.refresh_context()
+        if not context.timeline:
+            self.marker_records = []; self.filtered_markers = []; self._selected_marker_frames = set(); self._marker_state = ("", ()); self._populate_tree("MarkerTree", []); self._clear_marker_editor(); self._warning("MarkerWarning", "Open a timeline to use Marker Manager."); return
         self._warning("MarkerWarning")
-        self.marker_records = self.app.markers.list_markers(context.timeline)
+        self.marker_records = records if records is not None else self.app.markers.list_markers(context.timeline)
+        self._marker_state = self._marker_state_signature(context.timeline_id, self.marker_records)
         items = self.window.GetItems(); marker_type = self._combo_text("MarkerType")
         with_notes = True if marker_type == "With Notes" else False if marker_type == "Without Notes" else None
         type_filter = marker_type if marker_type in ("Point", "Range") else "All"
@@ -447,28 +823,302 @@ class ResolveHubShell:
         for index, record in enumerate(self.filtered_markers):
             start_tc = timeline_frame_to_timecode(context.timeline, timeline_start + record.start_frame, fps)
             end_tc = timeline_frame_to_timecode(context.timeline, timeline_start + record.end_frame, fps)
-            rows.append((index, record.name or "Untitled", record.color, start_tc, end_tc, duration_frames_to_display(record.duration_frames, fps), record.note.replace("\n", " ")[:80]))
-        self._populate_tree("MarkerTree", rows); items["MarkerCount"].Text = "%d markers" % len(rows); items["MarkerSelectionCount"].Text = "0 selected"
+            rows.append((index, record.name or "Untitled", "●  " + record.color, start_tc, end_tc, duration_frames_to_display(record.duration_frames, fps), record.note.replace("\n", " ")[:80]))
+        self._populating_marker_tree = True
+        try:
+            self._populate_tree("MarkerTree", rows)
+            self._apply_marker_color_swatches()
+        finally:
+            self._populating_marker_tree = False
+        items["MarkerCount"].Text = "%d markers" % len(rows)
+        tree = items["MarkerTree"]
+        restored = []
+        for index, marker in enumerate(self.filtered_markers):
+            if marker.start_frame in selected_frames:
+                restored.append(index)
+        self._selected_marker_frames = {self.filtered_markers[index].start_frame for index in restored}
+        preferred_index = next((index for index, marker in enumerate(self.filtered_markers) if marker.start_frame == preferred_frame), None)
+        if preferred_index is not None:
+            if preferred_index not in restored:
+                restored = [preferred_index]
+                self._selected_marker_frames = {self.filtered_markers[preferred_index].start_frame}
+            else:
+                try: tree.ScrollToItem(tree.TopLevelItem(preferred_index))
+                except Exception: pass
+        items["MarkerSelectionCount"].Text = "%d selected" % len(restored)
+        self._apply_marker_color_swatches()
+        active_index = preferred_index if preferred_index is not None else (restored[0] if restored else None)
+        if active_index is not None:
+            marker = self.filtered_markers[active_index]
+            self._active_marker_frame = marker.start_frame
+            self._populate_marker_editor(marker)
+        else:
+            self._clear_marker_editor()
+
+    def _filter_markers(self, event=None):
+        context = self.app.context.refresh_context()
+        if not context.timeline:
+            self._refresh_markers(context=context, records=[])
+            return
+        self._refresh_markers(context=context, records=self.marker_records)
+
+    def _sync_markers_if_changed(self, event=None):
+        if self.workspace != "Markers": return
+        context = self.app.context.refresh_context()
+        state = self._timeline_marker_state(context)
+        if state is not None and state != self._marker_state:
+            records = self.app.markers.list_markers(context.timeline) if context.timeline else []
+            self._refresh_markers(context=context, records=records)
+
+    def _clear_marker_editor(self):
+        self._active_marker_frame = None
+        items = self.window.GetItems()
+        items["MarkerName"].Text = ""
+        items["MarkerNotes"].PlainText = ""
+        items["MarkerStart"].Text = ""
+        items["MarkerEnd"].Text = ""
+        items["MarkerDuration"].Text = ""
+        self._set_marker_thumbnail(None, "Select a marker")
+
+    def _set_marker_thumbnail(self, path=None, empty_text="Thumbnail not available"):
+        preview = self.window.GetItems()["MarkerThumb"]
+        preview.Text = "" if path else empty_text
+        preview.Icon = self.ui.Icon({"File": ""})
+        preview.Update()
+        preview.Icon = self.ui.Icon({"File": str(Path(path).resolve()) if path else ""})
+        self._resize_marker_thumbnail()
+        preview.Update()
+
+    @staticmethod
+    def _marker_thumbnail_dimensions(window_width, window_height=900):
+        content_width = max(640, int(window_width) - 180)
+        editor_width = (content_width * 3.0 / 8.0) - 24
+        width_limit = max(160, min(720, int(editor_width * 0.90)))
+        height_limit = max(90, min(360, int(window_height) - 650))
+        width = min(width_limit, int(height_limit * 16.0 / 9.0))
+        width = max(160, width)
+        return width, max(90, int(round(width * 9.0 / 16.0)))
+
+    def _resize_marker_thumbnail(self, event=None):
+        _x, _y, window_width, window_height = self._geometry_values(self.window.Geometry)
+        width, height = self._marker_thumbnail_dimensions(window_width, window_height)
+        preview = self.window.GetItems()["MarkerThumb"]
+        preview.IconSize = [width, height]
+        preview.MinimumSize = [160, height + 12]
+        preview.MaximumSize = [10000, height + 12]
+        self._resize_marker_table_columns()
+        self._resize_other_tree_columns()
+
+    def _marker_clicked(self, event=None):
+        try:
+            self._handle_marker_clicked(event)
+        except Exception as exc:
+            self.app.logger.exception("Marker row selection failed")
+            self._set_status("Could not select marker: %s" % exc, True)
+
+    def _handle_marker_clicked(self, event=None):
+        marker = self._marker_from_event(event)
+        editor_is_current = bool(marker and self._active_marker_frame == marker.start_frame)
+        item, column = self._marker_event_cell(event)
+        if item is not None:
+            self._set_marker_item_editable(item, column != 2)
+        if marker:
+            modifiers = self._marker_click_modifiers(event)
+            selected = set(self._selected_marker_frames)
+            if "shift" in modifiers and self._marker_selection_anchor is not None:
+                frames = [value.start_frame for value in self.filtered_markers]
+                try:
+                    first = frames.index(self._marker_selection_anchor)
+                    last = frames.index(marker.start_frame)
+                    selected.update(frames[min(first, last):max(first, last) + 1])
+                except ValueError:
+                    selected = {marker.start_frame}
+            elif "control" in modifiers or "ctrl" in modifiers or "meta" in modifiers or "command" in modifiers:
+                if marker.start_frame in selected:
+                    selected.remove(marker.start_frame)
+                else:
+                    selected.add(marker.start_frame)
+                self._marker_selection_anchor = marker.start_frame
+            else:
+                selected = {marker.start_frame}
+                self._marker_selection_anchor = marker.start_frame
+            self._set_marker_selection(selected, marker.start_frame)
+            self._active_marker_frame = marker.start_frame
+            if not editor_is_current:
+                self._populate_marker_editor(marker)
+        self._go_to_marker(event)
+
+    def _marker_double_clicked(self, event=None):
+        item, column = self._marker_event_cell(event)
+        if column == 2:
+            if item is not None:
+                self._set_marker_item_editable(item, False)
+            return
+        self._go_to_marker(event)
+
+    @staticmethod
+    def _marker_event_cell(event):
+        if not isinstance(event, dict):
+            return None, -1
+        item = event.get("item") or event.get("Item")
+        try:
+            column = int(event.get("column", event.get("Column", -1)))
+        except (TypeError, ValueError):
+            column = -1
+        return item, column
+
+    @staticmethod
+    def _set_marker_item_editable(item, editable):
+        try:
+            flags = dict(item.GetFlags())
+            flags["ItemIsEditable"] = bool(editable)
+            item.SetFlags(flags)
+            return True
+        except Exception:
+            return False
 
     def _marker_selected(self, event=None):
-        marker = self._current_marker()
-        if not marker: return
+        if self._syncing_marker_selection:
+            return
+        marker = self._tree_marker()
+        if not marker:
+            return
+        self._active_marker_frame = marker.start_frame
+        self._populate_marker_editor(marker)
+
+    def _populate_marker_editor(self, marker):
         items = self.window.GetItems(); items["MarkerName"].Text = marker.name; items["MarkerNotes"].PlainText = marker.note
-        self._fill_combo("MarkerEditColor", MARKER_COLORS, marker.color)
+        self._fill_marker_color_combo("MarkerEditColor", MARKER_COLORS, marker.color)
         items["MarkerStart"].Text = self._marker_timecode(marker); items["MarkerEnd"].Text = self._marker_timecode(marker, True); items["MarkerDuration"].Text = str(marker.duration_frames)
-        items["MarkerRangeBar"].Text = "────────◀%s▶────────" % ("═" * max(2, min(18, marker.duration_frames)))
-        selected = self._selected_markers(); items["MarkerSelectionCount"].Text = "%d selected" % len(selected)
-        context = self.app.context.refresh_context(); key = self.app.thumbnails.cache_key(context.project_id, context.timeline_id, marker.stable_key, marker.start_frame, marker.color + marker.name)
+        self._sync_marker_range_sliders(marker)
+        selected = self._selected_markers(); items["MarkerSelectionCount"].Text = "%d selected" % (len(selected) or 1)
+        path = self._get_or_create_marker_thumbnail(marker)
+        marker.thumbnail_path = str(path) if path else None
+        self._set_marker_thumbnail(path, "Thumbnail unavailable · Refresh to retry")
+
+    def _get_or_create_marker_thumbnail(self, marker):
+        """Return the cached frame, generating it on first marker selection."""
+        context = self.app.context.refresh_context()
+        key = self.app.thumbnails.cache_key(context.project_id, context.timeline_id, marker.stable_key, marker.start_frame, marker.color + marker.name)
         path = self.app.thumbnails.get(key)
-        items["MarkerThumb"].Text = str(path) if path else "Thumbnail not cached"
-        if path:
-            try: items["MarkerThumb"].Pixmap = str(path)
-            except Exception: pass
+        if path or not self.app.thumbnails.enabled or not context.timeline or self._loading_marker_thumbnail:
+            return path
+        self._loading_marker_thumbnail = True
+        self._set_marker_thumbnail(None, "Loading thumbnail…")
+        try:
+            absolute = int(context.timeline.GetStartFrame()) + marker.start_frame
+            result = self.app.thumbnails.generate(context.timeline, absolute, key, self.app.context.get_project_fps())
+            if result.success and result.details:
+                return Path(result.details[0]["path"])
+            return None
+        finally:
+            self._loading_marker_thumbnail = False
+
+    def _sync_marker_range_sliders(self, marker):
+        items = self.window.GetItems()
+        context = self.app.context.refresh_context()
+        try:
+            timeline_start = int(context.timeline.GetStartFrame())
+            timeline_end = int(context.timeline.GetEndFrame())
+            maximum = max(1, timeline_end - timeline_start)
+        except Exception:
+            maximum = max(1, marker.end_frame)
+        self._syncing_marker_range_controls = True
+        try:
+            start_slider = items["MarkerRangeStartSlider"]
+            end_slider = items["MarkerRangeEndSlider"]
+            start_slider.Minimum = 0
+            start_slider.Maximum = maximum
+            end_slider.Minimum = 0
+            end_slider.Maximum = maximum
+            start_slider.Value = max(0, min(maximum, marker.start_frame))
+            end_slider.Value = max(0, min(maximum, marker.end_frame))
+        finally:
+            self._syncing_marker_range_controls = False
+
+    def _marker_range_slider_changed(self, edge):
+        if self._syncing_marker_range_controls:
+            return
+        marker = self._current_marker()
+        context = self.app.context.refresh_context()
+        if not marker or not context.timeline:
+            return
+        items = self.window.GetItems()
+        start_slider = items["MarkerRangeStartSlider"]
+        end_slider = items["MarkerRangeEndSlider"]
+        start = int(start_slider.Value)
+        end = int(end_slider.Value)
+        self._syncing_marker_range_controls = True
+        try:
+            if edge == "start" and start > end:
+                end = start
+                end_slider.Value = end
+            elif edge == "end" and end < start:
+                start = end
+                start_slider.Value = start
+        finally:
+            self._syncing_marker_range_controls = False
+        fps = self.app.context.get_project_fps()
+        timeline_start = int(context.timeline.GetStartFrame())
+        items["MarkerStart"].Text = timeline_frame_to_timecode(context.timeline, timeline_start + start, fps)
+        items["MarkerEnd"].Text = timeline_frame_to_timecode(context.timeline, timeline_start + end, fps)
+        items["MarkerDuration"].Text = str(end - start + 1)
+
+    def _marker_tree_item_changed(self, event=None):
+        if self._populating_marker_tree or not isinstance(event, dict):
+            return
+        item = event.get("item") or event.get("Item")
+        try:
+            column = int(event.get("column", event.get("Column", -1)))
+            index = int(item.Text[0])
+            marker = self.filtered_markers[index]
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return
+        if column == 0:
+            self._refresh_markers(select_frame=marker.start_frame)
+            return
+        context = self.app.context.refresh_context()
+        fps = self.app.context.get_project_fps()
+        try:
+            if column == 1:
+                candidate = marker.copy(name=str(item.Text[column]))
+                label = "Edit marker name in list"
+            elif column == 2:
+                self._refresh_markers(select_frame=marker.start_frame)
+                return
+            elif column == 3:
+                absolute = timeline_timecode_to_frame(context.timeline, str(item.Text[column]), fps)
+                value = absolute - int(context.timeline.GetStartFrame())
+                candidate = self.app.markers.edit_range(marker, start=value)
+                label = "Edit marker start in list"
+            elif column == 4:
+                absolute = timeline_timecode_to_frame(context.timeline, str(item.Text[column]), fps)
+                value = absolute - int(context.timeline.GetStartFrame())
+                candidate = self.app.markers.edit_range(marker, end=value)
+                label = "Edit marker end in list"
+            elif column == 5:
+                value = duration_display_to_frames(item.Text[column], fps)
+                candidate = self.app.markers.edit_range(marker, duration=value)
+                label = "Edit marker duration in list"
+            elif column == 6:
+                candidate = marker.copy(note=str(item.Text[column]))
+                label = "Edit marker notes in list"
+            else:
+                return
+            result = self.app.markers.replace_marker(marker, candidate, label=label)
+        except Exception as exc:
+            result = type("Result", (), {"success": False, "changed": 0, "unchanged": 0, "failed": 1, "warnings": [], "errors": [str(exc)]})()
+            candidate = marker
+        self._report_result(result, "Marker range updated")
+        self._refresh_markers(select_frame=candidate.start_frame if result.success else marker.start_frame)
 
     def _go_to_marker(self, event=None):
         marker = self._current_marker()
         if not marker: self._set_status("Select a marker first."); return
-        result = self.app.navigation.go_to(self._marker_timecode(marker), marker.stable_key, self.filtered_markers.index(marker)); self._report_result(result, "Marker selected")
+        result = self.app.navigation.go_to(self._marker_timecode(marker), marker.stable_key, self.filtered_markers.index(marker))
+        if result.success:
+            self.window.GetItems()["ContextTimecode"].Text = self.app.context.refresh_context().current_timecode or "—"
+        self._report_result(result, "Marker selected")
 
     def _go_to_marker_end(self, event=None):
         marker = self._current_marker()
@@ -476,11 +1126,22 @@ class ResolveHubShell:
         result = self.app.navigation.go_to(self._marker_timecode(marker, True), marker.stable_key, self.filtered_markers.index(marker)); self._report_result(result, "Marker end selected")
 
     def _step_marker(self, direction):
-        tree = self.window.GetItems()["MarkerTree"]; index = self._tree_current_index(tree)
+        tree = self.window.GetItems()["MarkerTree"]
+        index = next(
+            (
+                marker_index
+                for marker_index, marker in enumerate(self.filtered_markers)
+                if marker.start_frame == self._active_marker_frame
+            ),
+            self._tree_current_index(tree),
+        )
         _item, index = self.app.navigation.adjacent(self.filtered_markers, index, direction)
         if index >= 0:
-            self._select_tree_index(tree, index)
-            self._marker_selected(); self._go_to_marker()
+            marker = self.filtered_markers[index]
+            self._set_marker_selection({marker.start_frame}, marker.start_frame)
+            try: tree.ScrollToItem(tree.TopLevelItem(index))
+            except Exception: pass
+            self._populate_marker_editor(marker); self._go_to_marker()
 
     def _step_same_color(self, direction):
         current = self._current_marker()
@@ -489,8 +1150,11 @@ class ResolveHubShell:
         for target in candidates:
             if self.filtered_markers[target].color == current.color:
                 tree = self.window.GetItems()["MarkerTree"]
-                self._select_tree_index(tree, target)
-                self._marker_selected(); self._go_to_marker(); return
+                marker = self.filtered_markers[target]
+                self._set_marker_selection({marker.start_frame}, marker.start_frame)
+                try: tree.ScrollToItem(tree.TopLevelItem(target))
+                except Exception: pass
+                self._populate_marker_editor(marker); self._go_to_marker(); return
         self._set_status("No more %s markers in this result." % current.color)
 
     def _refresh_marker_thumb(self, event=None):
@@ -501,9 +1165,8 @@ class ResolveHubShell:
         absolute = int(context.timeline.GetStartFrame()) + marker.start_frame
         result = self.app.thumbnails.generate(context.timeline, absolute, key, self.app.context.get_project_fps())
         if result.success:
-            marker.thumbnail_path = result.details[0]["path"]; self.window.GetItems()["MarkerThumb"].Text = marker.thumbnail_path
-            try: self.window.GetItems()["MarkerThumb"].Pixmap = marker.thumbnail_path
-            except Exception: pass
+            marker.thumbnail_path = result.details[0]["path"]
+            self._set_marker_thumbnail(marker.thumbnail_path)
         self._report_result(result, "Thumbnail refreshed")
 
     def _refresh_visible_marker_thumbs(self, event=None):
@@ -518,26 +1181,40 @@ class ResolveHubShell:
         result.success = result.failed == 0; self._report_result(result, "Visible thumbnails refreshed")
 
     def _select_all_markers(self, event=None):
-        self._set_tree_selection(self.window.GetItems()["MarkerTree"], True)
-        self.window.GetItems()["MarkerSelectionCount"].Text = "%d selected" % len(self.filtered_markers)
+        self._set_marker_selection({marker.start_frame for marker in self.filtered_markers}, self._active_marker_frame)
 
     def _clear_marker_selection(self, event=None):
-        self._set_tree_selection(self.window.GetItems()["MarkerTree"], False)
-        self.window.GetItems()["MarkerSelectionCount"].Text = "0 selected"
+        self._set_marker_selection(set())
+        self._active_marker_frame = None
+        self._clear_marker_editor()
 
     def _save_marker_details(self, event=None):
         marker = self._current_marker()
         if not marker: self._set_status("Select a marker first."); return
         items = self.window.GetItems(); candidate = marker.copy(name=str(items["MarkerName"].Text), note=str(items["MarkerNotes"].PlainText), color=self._combo_text("MarkerEditColor"))
-        result = self.app.markers.replace_marker(marker, candidate, label="Edit marker details"); self._report_result(result, "Marker updated"); self._refresh_markers()
+        result = self.app.markers.replace_marker(marker, candidate, label="Edit marker details"); self._report_result(result, "Marker updated"); self._refresh_markers(select_frame=candidate.start_frame if result.success else marker.start_frame)
 
     def _clear_marker_notes(self, event=None):
         self.window.GetItems()["MarkerNotes"].PlainText = ""
+
+    def _delete_marker(self, event=None):
+        marker = self._current_marker()
+        if not marker: self._set_status("Select a marker first."); return
+        self.marker_preview = self.app.markers.preview_batch([marker], "delete", "Set", "")
+        self._show_preview("Delete Marker", self.marker_preview, self._apply_marker_delete_preview)
+
+    def _apply_marker_delete_preview(self):
+        result = self.app.markers.apply_preview(self.marker_preview, label="Delete marker")
+        self.marker_preview = None
+        self._report_result(result, "Marker deleted")
+        self._refresh_markers()
+        return result
 
     def _save_marker_range(self, event=None):
         marker = self._current_marker()
         if not marker: self._set_status("Select a marker first."); return
         items = self.window.GetItems(); context = self.app.context.refresh_context(); fps = self.app.context.get_project_fps()
+        candidate = marker
         try:
             absolute_start = timeline_timecode_to_frame(context.timeline, items["MarkerStart"].Text, fps); absolute_end = timeline_timecode_to_frame(context.timeline, items["MarkerEnd"].Text, fps)
             relative_start = absolute_start - int(context.timeline.GetStartFrame()); relative_end = absolute_end - int(context.timeline.GetStartFrame()); duration = int(items["MarkerDuration"].Text or relative_end - relative_start + 1)
@@ -556,14 +1233,15 @@ class ResolveHubShell:
                 candidate = marker
             result = self.app.markers.replace_marker(marker, candidate, label="Edit marker range")
         except Exception as exc: result = type("Result", (), {"success": False, "changed": 0, "unchanged": 0, "failed": 1, "warnings": [], "errors": [str(exc)]})()
-        self._report_result(result, "Marker range updated"); self._refresh_markers()
+        selected_frame = candidate.start_frame if result.success else marker.start_frame
+        self._report_result(result, "Marker range updated"); self._refresh_markers(select_frame=selected_frame)
 
     def _nudge_marker(self, edge, delta):
         marker = self._current_marker()
         if not marker: self._set_status("Select a marker first."); return
         if edge == "start": candidate = self.app.markers.edit_range(marker, start=marker.start_frame + delta)
         else: candidate = self.app.markers.edit_range(marker, end=marker.end_frame + delta)
-        result = self.app.markers.replace_marker(marker, candidate, label="Nudge marker %s" % edge); self._report_result(result, "Marker nudged"); self._refresh_markers()
+        result = self.app.markers.replace_marker(marker, candidate, label="Nudge marker %s" % edge); self._report_result(result, "Marker nudged"); self._refresh_markers(select_frame=candidate.start_frame if result.success else marker.start_frame)
 
     def _set_marker_edge(self, edge):
         marker = self._current_marker(); context = self.app.context.refresh_context()
@@ -571,7 +1249,7 @@ class ResolveHubShell:
         if not context.timeline: self._set_status("Open a timeline first.", True); return
         frame = timeline_timecode_to_frame(context.timeline, context.current_timecode, self.app.context.get_project_fps()) - int(context.timeline.GetStartFrame())
         candidate = self.app.markers.edit_range(marker, start=frame) if edge == "start" else self.app.markers.edit_range(marker, end=frame)
-        result = self.app.markers.replace_marker(marker, candidate, label="Set marker %s" % edge); self._report_result(result, "Marker updated"); self._refresh_markers()
+        result = self.app.markers.replace_marker(marker, candidate, label="Set marker %s" % edge); self._report_result(result, "Marker updated"); self._refresh_markers(select_frame=candidate.start_frame if result.success else marker.start_frame)
 
     def _move_marker_playhead(self, event=None):
         marker = self._current_marker(); context = self.app.context.refresh_context()
@@ -579,16 +1257,25 @@ class ResolveHubShell:
         if not context.timeline: self._set_status("Open a timeline first.", True); return
         frame = timeline_timecode_to_frame(context.timeline, context.current_timecode, self.app.context.get_project_fps()) - int(context.timeline.GetStartFrame())
         candidate = self.app.markers.edit_range(marker, move=frame - marker.start_frame)
-        result = self.app.markers.replace_marker(marker, candidate, label="Move marker"); self._report_result(result, "Marker moved"); self._refresh_markers()
+        result = self.app.markers.replace_marker(marker, candidate, label="Move marker"); self._report_result(result, "Marker moved"); self._refresh_markers(select_frame=candidate.start_frame if result.success else marker.start_frame)
 
     def _add_marker(self, event=None):
-        context = self.app.context.refresh_context()
-        if not context.timeline: self._set_status("Open a timeline first.", True); return
-        presets = self.app.preferences.get("markers", "presets", []); preset = presets[0] if presets else {"color": "Blue", "default_marker_name": "Marker", "default_duration_frames": 1, "note_template": "", "custom_data": {}}
-        frame = timeline_timecode_to_frame(context.timeline, context.current_timecode, self.app.context.get_project_fps()) - int(context.timeline.GetStartFrame())
-        custom = json.dumps(preset.get("custom_data", {}), sort_keys=True) if preset.get("custom_data") else ""
-        result = self.app.markers.add_marker(context.timeline, frame, preset.get("color", "Blue"), preset.get("default_marker_name", "Marker"), preset.get("note_template", ""), int(preset.get("default_duration_frames", 1)), custom)
-        self._report_result(result, "Marker added"); self._refresh_markers()
+        try:
+            context = self.app.context.refresh_context()
+            if not context.timeline:
+                self._set_status("Open a timeline first.", True)
+                return
+            if not context.current_timecode:
+                self._set_status("Resolve did not provide the current playhead timecode.", True)
+                return
+            frame = timeline_timecode_to_frame(context.timeline, context.current_timecode, self.app.context.get_project_fps()) - int(context.timeline.GetStartFrame())
+            duration = int(self.app.preferences.get("markers", "default_duration", 1) or 1)
+            result = self.app.markers.add_marker(context.timeline, frame, "Blue", "Marker", "", duration, "")
+        except Exception as exc:
+            self._set_status("Could not add marker: %s" % exc, True)
+            return
+        self._report_result(result, "Marker added")
+        self._refresh_markers(select_frame=frame if result.success else None)
 
     def _apply_marker_preset(self, event=None):
         marker = self._current_marker()
@@ -624,13 +1311,32 @@ class ResolveHubShell:
     def _refresh_metadata(self, event=None):
         self._refresh_selection()
         if not self.selection:
-            self.metadata_records = []; self._populate_tree("MetadataClipTree", []); self._warning("MetadataWarning", "Choose an available clip selection source."); return
+            self.metadata_all_records = []; self.metadata_records = []; self._populate_tree("MetadataClipTree", []); self._clear_metadata_editor(); self._warning("MetadataWarning", "Choose an available clip selection source."); return
         self._warning("MetadataWarning")
-        all_records = self.app.metadata.build_records(self.selection.clips, self.selection.timeline_items)
+        self.metadata_all_records = self.app.metadata.build_records(self.selection.clips, self.selection.timeline_items)
+        self._filter_metadata()
+
+    def _filter_metadata(self, event=None):
+        current = self._current_metadata()
+        current_id = current.unique_id if current else ""
         missing = self._combo_text("MetadataMissingField"); missing = "" if missing == "Any" else missing
-        self.metadata_records = self.app.metadata.search(all_records, self.window.GetItems()["MetadataSearch"].Text, missing)
+        self.metadata_records = self.app.metadata.search(self.metadata_all_records, self.window.GetItems()["MetadataSearch"].Text, missing)
         rows = [(index, record.name, record.metadata.get("Scene", ""), record.metadata.get("Take", ""), record.metadata.get("Camera #", record.metadata.get("Camera ID", "")), record.metadata.get("Reel Name", "")) for index, record in enumerate(self.metadata_records)]
         self._populate_tree("MetadataClipTree", rows); self.window.GetItems()["MetadataCount"].Text = "%d clips" % len(rows)
+        selected = next((index for index, record in enumerate(self.metadata_records) if record.unique_id == current_id), -1)
+        if selected >= 0:
+            self._select_tree_index(self.window.GetItems()["MetadataClipTree"], selected)
+            self._metadata_selected()
+        else:
+            self._clear_metadata_editor()
+
+    def _clear_metadata_editor(self):
+        items = self.window.GetItems()
+        items["MetadataClipName"].Text = "Select a clip"
+        items["MetadataValue"].Text = ""
+        items["MetadataLargeThumb"].Text = "Thumbnail not cached"
+        try: items["MetadataLargeThumb"].Pixmap = ""
+        except Exception: pass
 
     def _current_metadata(self):
         index = self._tree_current_index(self.window.GetItems()["MetadataClipTree"]); return self.metadata_records[index] if 0 <= index < len(self.metadata_records) else None
@@ -646,6 +1352,11 @@ class ResolveHubShell:
         if record.thumbnail_path:
             try: items["MetadataLargeThumb"].Pixmap = record.thumbnail_path
             except Exception: items["MetadataLargeThumb"].Text = record.thumbnail_path
+
+    def _metadata_field_changed(self, event=None):
+        record = self._current_metadata()
+        if record:
+            self.window.GetItems()["MetadataValue"].Text = str(record.metadata.get(self._combo_text("MetadataField"), ""))
 
     def _refresh_metadata_thumb(self, event=None):
         record = self._current_metadata(); context = self.app.context.refresh_context()
@@ -683,6 +1394,10 @@ class ResolveHubShell:
         return self.app.metadata.preview_batch(records, self._combo_text("MetadataBatchField"), self._combo_text("MetadataBatchOperation"), self.window.GetItems()["MetadataBatchValue"].Text, self.window.GetItems()["MetadataBatchReplacement"].Text, bool(self.window.GetItems()["MetadataBlanksOnly"].Checked), self.window.GetItems()["MetadataBatchReplacement"].Text)
 
     def _preview_metadata_batch(self, event=None):
+        records = self._selected_metadata() or self.metadata_records
+        if not records:
+            self._set_status("No clips are available for metadata batch editing.")
+            return
         self.metadata_preview = self._metadata_batch(); self._show_preview("Metadata Batch", self.metadata_preview, self._apply_metadata_preview)
 
     def _apply_metadata_batch(self, event=None):
@@ -722,7 +1437,11 @@ class ResolveHubShell:
         records = [self.metadata_records[index] for index in indices if 0 <= index < len(self.metadata_records)] or self.metadata_records
         self.rename_preview = self.app.rename.preview(records, items["RenameTemplate"].Text, items["RenamePrefix"].Text, items["RenameSuffix"].Text, items["RenameFind"].Text, items["RenameReplace"].Text, bool(items["RenameRegex"].Checked), bool(items["RenameWhitespace"].Checked), True, self._combo_text("RenameCase"), start, width)
         rows = [(index, change.before, change.after, change.status) for index, change in enumerate(self.rename_preview.changes)]; self._populate_tree("RenameTree", rows); items["RenameCount"].Text = "%d clips · %d safe" % (len(rows), self.rename_preview.changed)
-        if pop_window: self._show_preview("Rename Clips", self.rename_preview, self._apply_rename_preview)
+        if pop_window:
+            if not records:
+                self._set_status("No clips are available to rename.")
+                return
+            self._show_preview("Rename Clips", self.rename_preview, self._apply_rename_preview)
 
     def _apply_rename(self, event=None):
         self._preview_rename(pop_window=True)
@@ -805,8 +1524,11 @@ class ResolveHubShell:
             self._switch_workspace("Markers")
             for index, marker in enumerate(self.filtered_markers):
                 if marker.stable_key == item.source_id:
-                    self._select_tree_index(self.window.GetItems()["MarkerTree"], index)
-                    self._marker_selected(); break
+                    tree = self.window.GetItems()["MarkerTree"]
+                    self._set_marker_selection({marker.start_frame}, marker.start_frame)
+                    try: tree.ScrollToItem(tree.TopLevelItem(index))
+                    except Exception: pass
+                    self._populate_marker_editor(marker); break
         elif item.source_type == "timeline_clip":
             try: clip_id = str(item.source_object.GetMediaPoolItem().GetUniqueId())
             except Exception: clip_id = ""
@@ -940,7 +1662,7 @@ class ResolveHubShell:
     def _preset_selected(self, event=None):
         index = self._tree_current_index(self.window.GetItems()["PresetTree"]); presets = self.app.preferences.get("markers", "presets", [])
         if not (0 <= index < len(presets)): return
-        value = presets[index]; items = self.window.GetItems(); items["PresetName"].Text = value.get("name", ""); items["PresetDefaultName"].Text = value.get("default_marker_name", ""); items["PresetDuration"].Text = str(value.get("default_duration_frames", 1)); self._fill_combo("PresetColor", MARKER_COLORS, value.get("color", "Blue"))
+        value = presets[index]; items = self.window.GetItems(); items["PresetName"].Text = value.get("name", ""); items["PresetDefaultName"].Text = value.get("default_marker_name", ""); items["PresetDuration"].Text = str(value.get("default_duration_frames", 1)); self._fill_marker_color_combo("PresetColor", MARKER_COLORS, value.get("color", "Blue"))
 
     def _preset_value(self):
         items = self.window.GetItems()
@@ -969,19 +1691,35 @@ class ResolveHubShell:
 
     def _save_settings(self, event=None):
         items = self.window.GetItems(); prefs = self.app.preferences
+        try:
+            marker_duration = int(items["SettingMarkerDuration"].Text)
+            if marker_duration < 1:
+                raise ValueError
+        except ValueError:
+            self._set_status("Default marker duration must be a positive frame count.", True)
+            return
         prefs.data["general"].update({"restore_last_workspace": bool(items["SettingRestoreWorkspace"].Checked), "restore_window_geometry": bool(items["SettingRestoreGeometry"].Checked), "confirm_destructive_batch": bool(items["SettingConfirmBatch"].Checked), "default_selection_source": self._combo_text("SettingDefaultSelection")})
         prefs.data["thumbnails"].update({"enabled": bool(items["SettingThumbnails"].Checked), "cache_folder": str(items["SettingCacheFolder"].Text)})
-        try: prefs.data["markers"]["default_duration"] = max(1, int(items["SettingMarkerDuration"].Text))
-        except ValueError: pass
+        prefs.data["markers"]["default_duration"] = marker_duration
         prefs.data["metadata"]["required_fields"] = [value.strip() for value in str(items["SettingRequiredMetadata"].Text).split(",") if value.strip()]
         prefs.data["stills"].update({"default_output_folder": str(items["SettingStillFolder"].Text), "naming_template": str(items["SettingStillTemplate"].Text)})
-        prefs.save(); self.app.thumbnails.enabled = prefs.data["thumbnails"]["enabled"]; self.app.thumbnails.folder = Path(prefs.data["thumbnails"]["cache_folder"]); items["SettingsStatus"].Text = "Saved"; self._set_status("Settings saved")
+        prefs.save()
+        self.app.thumbnails.enabled = prefs.data["thumbnails"]["enabled"]
+        cache_folder = str(prefs.data["thumbnails"]["cache_folder"] or "").strip()
+        self.app.thumbnails.folder = Path(cache_folder) if cache_folder else user_data_dir() / ".cache" / "thumbnails"
+        items["SettingsStatus"].Text = "Saved"; self._set_status("Settings saved")
 
     def _browse_cache_folder(self, event=None):
         selected = self.app.fusion.RequestDir(str(self.window.GetItems()["SettingCacheFolder"].Text))
         if selected: self.window.GetItems()["SettingCacheFolder"].Text = str(selected)
 
-    def _clear_thumbnail_cache(self, event=None): self._set_status("Cleared %d cached thumbnails" % self.app.thumbnails.clear())
+    def _clear_thumbnail_cache(self, event=None):
+        removed = self.app.thumbnails.clear()
+        marker = self._current_marker()
+        if marker:
+            marker.thumbnail_path = None
+            self._set_marker_thumbnail(None, "Thumbnail cache cleared")
+        self._set_status("Cleared %d cached thumbnails" % removed)
 
     def _show_preview(self, title, preview, callback):
         self.preview_data, self.preview_callback = preview, callback; items = self.preview_window.GetItems(); items["PreviewTitle"].Text = title; items["PreviewSummary"].Text = "%d will change · %d unchanged · %d conflicts" % (preview.changed, preview.unchanged, preview.conflicts)
@@ -991,6 +1729,11 @@ class ResolveHubShell:
             for column, value in enumerate((change.label, change.field, change.before, change.after, change.status)): row.Text[column] = str(value)
             target.AddTopLevelItem(row)
         self.preview_window.Show(); self.preview_window.Raise()
+        try:
+            widths = self._proportional_column_widths(int(target.Width()), (0.24, 0.15, 0.23, 0.23, 0.15))
+            for column, width in enumerate(widths): target.ColumnWidth[column] = width
+        except Exception:
+            pass
 
     def _cancel_preview(self, event=None): self.preview_window.Hide(); self.preview_data = None; self.preview_callback = None; self._set_status("Preview cancelled")
 
@@ -1005,16 +1748,39 @@ class ResolveHubShell:
             message = "; ".join(result.errors or ["Operation failed."]); self._set_status(message, True)
 
     def _close(self, event=None):
+        self._running = False
+        self._hide_color_picker()
+        geometry = self._geometry_values(self.window.Geometry)
+        try: self.window.Hide()
+        except Exception: pass
+        try: self.dispatcher.ExitLoop()
+        except Exception: pass
         if self.app.preferences.get("general", "restore_window_geometry", True):
             try:
-                geometry = list(self.window.Geometry)
                 if valid_window_geometry(geometry) == geometry:
                     self.app.preferences.set("general", "window_geometry", geometry)
             except Exception:
                 pass
-        self.app.stills.cleanup_preview(); self.preview_window.Hide(); self.still_window.Hide(); self.dispatcher.ExitLoop()
+        try: self.app.stills.cleanup_preview()
+        except Exception: pass
+        try: self.preview_window.Hide()
+        except Exception: pass
+        try: self.still_window.Hide()
+        except Exception: pass
+        return True
 
     def run(self):
-        self.preview_window.Hide(); self.still_window.Hide(); self.window.GetItems()["WorkspaceStack"].CurrentIndex = WORKSPACES.index(self.workspace)
+        self.color_window.Hide(); self.preview_window.Hide(); self.still_window.Hide(); self.window.GetItems()["WorkspaceStack"].CurrentIndex = WORKSPACES.index(self.workspace)
         for name in WORKSPACES: self.window.GetItems()["Nav" + name].StyleSheet = theme.NAV_ACTIVE if name == self.workspace else theme.NAV
-        self._refresh_context(); self._refresh_workspace(); self.window.Show(); self.window.Raise(); self.dispatcher.RunLoop(); self.window.Hide(); self.preview_window.Hide(); self.still_window.Hide()
+        self._refresh_context(); self._refresh_workspace(); self.window.Show(); self.window.Raise()
+        self._resize_marker_thumbnail()
+        self._running = True
+        next_marker_sync = time.monotonic() + 0.75
+        while self._running:
+            self.dispatcher.StepLoop()
+            now = time.monotonic()
+            if now >= next_marker_sync:
+                self._sync_markers_if_changed()
+                next_marker_sync = now + 0.75
+            time.sleep(0.01)
+        self.window.Hide(); self.color_window.Hide(); self.preview_window.Hide(); self.still_window.Hide()

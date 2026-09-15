@@ -46,6 +46,8 @@ def timecode_to_frames(timecode, fps, start_timecode=None, clamp_negative=False)
         if not is_drop_frame_rate(fps):
             raise TimecodeError("Drop-frame timecode requires 29.97 or 59.94 fps.")
         dropped = 2 if rate == 30 else 4
+        if seconds == 0 and minutes % 10 != 0 and frames < dropped:
+            raise TimecodeError("This frame number is skipped by drop-frame timecode.")
         total -= dropped * ((hours * 60 + minutes) - ((hours * 60 + minutes) // 10))
     if start_timecode is not None:
         total -= timecode_to_frames(start_timecode, fps)
@@ -86,6 +88,15 @@ def duration_frames_to_display(duration, fps):
     return frames_to_timecode(max(0, int(duration)), fps, drop_frame=False)
 
 
+def duration_display_to_frames(value, fps):
+    """Accept either a frame count or HH:MM:SS:FF duration."""
+    text = str(value or "").strip()
+    duration = timecode_to_frames(text, fps) if ":" in text or ";" in text else int(text)
+    if duration < 1:
+        raise TimecodeError("Marker duration must be at least one frame.")
+    return duration
+
+
 def nudge_frame(frame, amount, minimum=None, maximum=None):
     return clamp_frame(int(frame) + int(amount), minimum, maximum)
 
@@ -117,4 +128,3 @@ def timeline_timecode_to_frame(timeline, timecode, fps):
     start_frame = timeline_start_frame(timeline)
     start_tc = timeline.GetStartTimecode() if callable(getattr(timeline, "GetStartTimecode", None)) else "00:00:00:00"
     return start_frame + timecode_to_frames(timecode, fps, start_timecode=start_tc)
-

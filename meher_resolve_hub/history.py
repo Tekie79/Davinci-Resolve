@@ -43,7 +43,9 @@ class OperationHistory:
         if not self.path:
             return None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps([record.to_dict() for record in self.records], indent=2), encoding="utf-8")
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary.write_text(json.dumps([record.to_dict() for record in self.records], indent=2), encoding="utf-8")
+        temporary.replace(self.path)
         return self.path
 
     def load(self):
@@ -54,4 +56,3 @@ class OperationHistory:
             except Exception:
                 self.records = []
         return self.records
-

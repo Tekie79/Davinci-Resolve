@@ -1,6 +1,6 @@
 # Meher Flow Resolve Hub
 
-**Meher Flow Resolve Hub v0.3.0** is a modular DaVinci Resolve companion built
+**Meher Flow Resolve Hub v0.3.20** is a modular DaVinci Resolve companion built
 with Fusion UIManager. It centralizes marker, metadata, clip-name, still, and
 media-health work into one matte Meher Flow Amber workstation.
 

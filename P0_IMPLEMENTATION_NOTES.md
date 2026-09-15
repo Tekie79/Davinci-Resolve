@@ -8,16 +8,17 @@
 - The scripting API does not expose a general timeline playback command. **Play
   Range** is visible but disabled with an explanation. Start/end navigation is
   frame accurate.
-- Fusion UIManager does not provide a reliable frame-accurate drag event model
-  across Resolve versions. The range bar is visual; exact range editing uses
-  timecode fields, playhead setters, and 1/5/10-frame nudge controls.
+- The marker range editor uses separate draggable start/end sliders because
+  Fusion UIManager has no portable dual-handle range control. Exact range
+  editing also remains available through timecode fields, playhead setters, and
+  1/5/10-frame nudge controls.
 - Proxy state is reported only when Resolve exposes a reliable proxy property.
   Otherwise Media Health identifies the check as skipped instead of asserting a
   missing proxy.
-- Thumbnail generation uses direct current-frame export and restores the
-  original playhead. If Pillow is present, cached PNGs are reduced toward
-  160×90; without Pillow, the cache retains Resolve's export dimensions. A
-  thumbnail failure never blocks editing.
+- Thumbnail generation uses direct current-frame export, waits for Resolve to
+  display the requested frame, and restores the original playhead. Cached PNGs
+  are reduced toward 960×540 using Pillow when available or macOS `sips` as a
+  dependency-free fallback. A thumbnail failure never blocks editing.
 - Cross-session Undo records persist, but an operation is refused when its
   target proxy is no longer loaded or its current value no longer matches the
   value Resolve Hub applied.
@@ -44,4 +45,3 @@
 - Media Pool import retries and Media Storage fallbacks.
 - Restoration of the previously active Media Pool bin.
 - Return to the Stills workspace after saving.
-

@@ -1,4 +1,4 @@
-# Manual Resolve Acceptance — v0.3.0
+# Manual Resolve Acceptance — v0.3.20
 
 Use a disposable test project/timeline before testing mutations. Record Resolve
 version, OS, page, project, timeline, and selection source with each run.
@@ -20,6 +20,16 @@ version, OS, page, project, timeline, and selection source with each run.
 
 ## Marker Manager
 
+- [ ] Close Resolve Hub with both the native window control and the in-app ×;
+  confirm the window hides immediately, including after previewing a still.
+- [ ] While the Hub is open, choose its Resolve Scripts menu entry again and
+  confirm it raises the existing window without creating a duplicate.
+- [ ] Add, edit, and delete markers with Resolve's native shortcuts while the
+  Hub is open; confirm the list updates within one second without Refresh.
+- [ ] Single-click a marker row; confirm the row remains visibly highlighted,
+  the editor stays populated after Save, and the playhead moves to its start.
+- [ ] Delete a marker from the editor; confirm the preview appears before Apply
+  and Undo restores the marker.
 - [ ] Browse 500+ markers; search name/notes/custom data and filter by color,
   point/range, notes, and sort order.
 - [ ] Navigate previous/next, same-color previous/next, start/end, and Return.
@@ -88,4 +98,3 @@ version, OS, page, project, timeline, and selection source with each run.
   show exact actionable errors.
 - [ ] Confirm no lost marker after failed mutation, no playhead drift after
   thumbnails/batch stills, and no current-bin drift after still import.
-

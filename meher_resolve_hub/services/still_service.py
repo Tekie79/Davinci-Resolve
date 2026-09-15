@@ -3,6 +3,7 @@
 import os
 import shutil
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -65,6 +66,20 @@ class StillService:
                 exported = False
         actual = find_exported_png(destination.parent, destination)
         return actual if exported and actual else None
+
+    @staticmethod
+    def _wait_for_timecode(timeline, target, timeout=0.75):
+        """Wait until Resolve has actually displayed the requested frame."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            try:
+                if str(timeline.GetCurrentTimecode() or "") == str(target):
+                    return True
+            except Exception:
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
 
     def capture_current_frame(self):
         self.cleanup_preview()
@@ -174,14 +189,22 @@ class StillService:
             return OperationResult(False, errors=["Open the source project and timeline first."])
         if any(item.timeline_id != context.timeline_id for item in queue):
             return OperationResult(False, errors=["The capture queue belongs to another timeline."])
-        folder = Path(output_folder); folder.mkdir(parents=True, exist_ok=True)
+        folder = Path(output_folder)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            return OperationResult(False, failed=len(queue), errors=["Could not create the output folder: %s" % exc])
         previous = context.current_timecode
         result, paths = OperationResult(True), []
         try:
             for item in queue:
                 if item.status == "Conflict": result.unchanged += 1; result.warnings.append("Skipped conflict: %s" % item.filename); continue
-                if not context.timeline.SetCurrentTimecode(item.timecode):
+                try:
+                    context.timeline.SetCurrentTimecode(item.timecode)
+                except Exception:
                     item.status = "Failed"; result.failed += 1; result.errors.append("Could not navigate to %s." % item.timecode); continue
+                if not self._wait_for_timecode(context.timeline, item.timecode):
+                    item.status = "Failed"; result.failed += 1; result.errors.append("Resolve did not reach %s before capture." % item.timecode); continue
                 destination = folder / item.filename
                 actual = self._export_current(context.project, context.timeline, destination)
                 if not actual:
@@ -203,9 +226,9 @@ class StillService:
             return OperationResult(False, errors=["This still belongs to another timeline."])
         try:
             previous = context.current_timecode
-            success = bool(context.timeline.SetCurrentTimecode(item.timecode))
-            actual = str(context.timeline.GetCurrentTimecode() or "")
+            context.timeline.SetCurrentTimecode(item.timecode)
+            success = self._wait_for_timecode(context.timeline, item.timecode)
         except Exception as exc: return OperationResult(False, failed=1, errors=[str(exc)])
         if self.navigation and success:
             self.navigation.state.timeline_id = context.timeline_id; self.navigation.state.previous_timecode = previous; self.navigation.state.selected_key = item.source_id
-        return OperationResult(success and actual == item.timecode, changed=1 if success and actual == item.timecode else 0, failed=0 if success and actual == item.timecode else 1)
+        return OperationResult(bool(success), changed=1 if success else 0, failed=0 if success else 1)

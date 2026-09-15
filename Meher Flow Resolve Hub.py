@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DaVinci Resolve menu entry for Meher Flow Resolve Hub v0.3.0."""
+"""DaVinci Resolve menu entry for Meher Flow Resolve Hub v0.3.20."""
 
 import sys
 import os
@@ -32,7 +32,7 @@ for location in (_script_directory(), _runtime_directory()):
     if str(location) not in sys.path:
         sys.path.insert(0, str(location))
 
-WINDOW_ID = "com.meher-flow.resolve-hub.v030"
+WINDOW_ID = "com.meher-flow.resolve-hub.v0320"
 
 
 def _raise_existing(namespace):
@@ -42,8 +42,15 @@ def _raise_existing(namespace):
     except Exception:
         existing = None
     if existing:
-        existing.Show()
-        existing.Raise()
+        # Resolve's UIManager can report Visible=True after Hide(), so checking
+        # that property turns subsequent menu launches into repeated hides.
+        # A Scripts-menu launch should reliably reveal the existing Hub; the
+        # window's own close control remains the explicit way to hide it.
+        try:
+            existing.Show()
+            existing.Raise()
+        except Exception:
+            pass
         return existing
     return None
 

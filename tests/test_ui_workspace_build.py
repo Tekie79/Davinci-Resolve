@@ -13,6 +13,7 @@ from meher_resolve_hub.ui import (
     settings_workspace,
     still_workspace,
 )
+from meher_resolve_hub.ui.components import color_selector
 
 
 class FakeUI:
@@ -39,6 +40,16 @@ class WorkspaceBuildTests(unittest.TestCase):
         for module in modules:
             with self.subTest(module=module.__name__):
                 self.assertIsNotNone(module.build(ui))
+
+    def test_color_selector_places_css_dot_inside_field(self):
+        control = color_selector(FakeUI(), "MarkerEditColor", "Blue", 1)
+        properties, children = control["args"]
+        self.assertEqual(properties["ID"], "MarkerEditColorField")
+        child_ids = [child["args"][0].get("ID") for child in children]
+        self.assertEqual(child_ids, ["MarkerEditColorDotWrap", "MarkerEditColor", "MarkerEditColorArrow"])
+        centered_children = children[0]["args"][1]
+        self.assertEqual(centered_children[1]["args"][0]["ID"], "MarkerEditColorDot")
+
 
 
 if __name__ == "__main__":
