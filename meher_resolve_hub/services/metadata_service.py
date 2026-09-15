@@ -93,19 +93,22 @@ class MetadataService:
             result.append(record)
         return result
 
-    def set_field(self, record, field, value, record_history=True):
+    def set_field(self, record, field, value, record_history=True, expected_before=None):
         clip = record.media_pool_item
         try: current = str((clip.GetMetadata() or {}).get(field, ""))
         except Exception as exc: return OperationResult(False, failed=1, errors=["Could not read metadata: %s" % exc])
-        value = str(value or "")
+        if expected_before is not None and current != str(expected_before):
+            return OperationResult(False, failed=1, errors=["%s changed after preview for %s; refresh and preview again." % (field, record.name)])
+        value = "" if value is None else str(value)
         if current == value:
             return OperationResult(True, unchanged=1)
         try:
-            returned = bool(clip.SetMetadata({field: value}))
+            clip.SetMetadata({field: value})
             actual = str((clip.GetMetadata() or {}).get(field, ""))
         except Exception as exc:
             return OperationResult(False, failed=1, errors=["Metadata update failed: %s" % exc])
-        if not returned or actual != value:
+        # As with markers, read-back is authoritative when a binding returns None.
+        if actual != value:
             return OperationResult(False, failed=1, errors=["Resolve did not retain %s for %s." % (field, record.name)])
         record.metadata[field] = value
         if record_history and self.history:
@@ -135,12 +138,17 @@ class MetadataService:
                 result.unchanged += 1
                 if change.status not in ("Ready", "Unchanged"): result.warnings.append("%s: %s" % (change.label, change.status))
                 continue
-            item = self.set_field(change.source, change.field, change.after, record_history=False)
+            item = self.set_field(change.source, change.field, change.after, record_history=False, expected_before=change.before)
             result.absorb(item)
             if item.success and item.changed:
-                ids.append(change.object_id)
-                before[change.object_id] = {change.field: change.before}
-                after[change.object_id] = {change.field: change.after}
+                if change.object_id not in before:
+                    ids.append(change.object_id)
+                    before[change.object_id] = {}
+                    after[change.object_id] = {}
+                # CSV imports can edit several fields on a single clip. Keep all
+                # fields and one object id, instead of overwriting the last one.
+                before[change.object_id].setdefault(change.field, change.before)
+                after[change.object_id][change.field] = change.after
         result.success = result.failed == 0
         if ids and self.history:
             self.history.add(OperationRecord("metadata", label, ids, before, after))
@@ -148,17 +156,27 @@ class MetadataService:
 
     def undo(self, operation):
         result = OperationResult(True)
-        for identity in operation.object_ids:
+        for identity in dict.fromkeys(operation.object_ids):
             record = self._clips.get(identity)
             if not record:
                 result.failed += 1; result.errors.append("Clip %s is no longer loaded." % identity); continue
             expected = operation.after.get(identity, {})
-            try: actual = dict(record.media_pool_item.GetMetadata() or {})
-            except Exception: actual = {}
-            if any(str(actual.get(key, "")) != str(value) for key, value in expected.items()):
+            previous = operation.before.get(identity, {})
+            if not expected or set(expected) != set(previous):
+                result.failed += 1; result.errors.append("History fields are incomplete for %s." % record.name); continue
+            try:
+                actual = dict(record.media_pool_item.GetMetadata() or {})
+            except Exception as exc:
+                result.failed += 1; result.errors.append("Could not read %s for undo: %s" % (record.name, exc)); continue
+            # Allow already-restored fields when retrying a partially failed undo.
+            if any(str(actual.get(key, "")) not in (str(value), str(previous[key])) for key, value in expected.items()):
                 result.failed += 1; result.errors.append("%s changed after the operation; undo skipped." % record.name); continue
-            for key, value in operation.before.get(identity, {}).items():
-                result.absorb(self.set_field(record, key, value, record_history=False))
+            for key, value in previous.items():
+                current = str(actual.get(key, ""))
+                if current == str(value):
+                    result.unchanged += 1
+                    continue
+                result.absorb(self.set_field(record, key, value, record_history=False, expected_before=expected[key]))
         result.success = result.failed == 0
         return result
 
