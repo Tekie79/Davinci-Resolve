@@ -60,6 +60,16 @@ restore the original on failure, and prominently report rollback failure.
 
 ## Install
 
+On macOS, deploy or update everything with one command from this directory:
+
+```bash
+./deploy.sh
+```
+
+The command validates the Python entry points, runs the automated tests, and
+installs the runtime package and Resolve Utility menu scripts. If the Hub is
+already open, close it and reopen it after deployment.
+
 Copy both launchers into Resolve's per-user `Fusion/Scripts/Utility` directory.
 Install the `meher_resolve_hub` package in the Resolve Hub runtime directory so
 Resolve does not recursively expose internal modules as menu scripts. On macOS:
