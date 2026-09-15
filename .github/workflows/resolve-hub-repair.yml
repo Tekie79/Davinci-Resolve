@@ -1,0 +1,69 @@
+name: Apply Resolve Hub follow-up repairs
+
+on:
+  push:
+    branches: [fix/resolve-hub-marker-audit]
+    paths:
+      - .github/workflows/resolve-hub-repair.yml
+      - _repair_backend.py
+      - _repair_ui.py
+      - _repair_driver.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: resolve-hub-source-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.repository == 'Tekie79/Davinci-Resolve' && github.ref == 'refs/heads/fix/resolve-hub-marker-audit'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Record failing follow-up tests before source repair
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          python3 -m unittest discover -s tests -v 2>&1 | tee test-results-before.txt
+          printf 'Pre-repair exit code: %s\n' "$?"
+          exit 0
+      - name: Apply checked source changes
+        run: python3 _repair_driver.py
+      - name: Verify repaired source and all regressions
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s tests -v 2>&1 | tee test-results-after.txt
+          git diff --check
+      - name: Commit tested application changes to audit branch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch='fix/resolve-hub-marker-audit'
+          remote_head=$(git ls-remote origin "refs/heads/$branch" | cut -f1)
+          test "$remote_head" = "$(git rev-parse HEAD)" || { echo 'Branch changed during verification; refusing to overwrite it.'; exit 1; }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- meher_resolve_hub 'Media Manager.py' 'Meher Flow Resolve Hub.py' README.md MANUAL_RESOLVE_ACCEPTANCE.md .gitignore AUDIT_FOLLOWUP.md tests/test_followup_repairs.py
+          git diff --cached --stat
+          git commit -m 'fix: stabilize marker browser and repair remaining audited workflows'
+          git push origin "HEAD:refs/heads/$branch"
+          echo "TESTED_SOURCE_COMMIT=$(git rev-parse HEAD)"
+      - name: Retain regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolve-hub-followup-tests
+          retention-days: 7
+          path: |
+            test-results-before.txt
+            test-results-after.txt
