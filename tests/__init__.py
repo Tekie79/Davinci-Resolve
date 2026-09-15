@@ -1,0 +1,2 @@
+"""Resolve Hub tests."""
+
