@@ -18,6 +18,9 @@ def main():
     backend.transform_method = transform
     import _repair_ui
     _repair_ui.apply()
+    # Keep the established visible inline-editor focus outline. Compensate its
+    # border with padding, retaining the same 5-pixel inset and stable row box.
+    backend.replace_once("meher_resolve_hub/theme.py", "border:1px solid #C58A35;border-radius:0;padding:4px;", "border:2px solid #C58A35;border-radius:0;padding:3px;")
     backend.put_method("meher_resolve_hub/services/still_service.py", "StillService", "_export_current", '''
 def _export_current(self, project, timeline, destination):
     # Every export has an isolated discovery namespace and exclusive publication.
