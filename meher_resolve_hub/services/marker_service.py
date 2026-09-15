@@ -1,11 +1,8 @@
 """Marker browsing, filtering, safe mutation, batch preview, and rollback."""
 
-import json
-
 from ..constants import MARKER_COLORS
 from ..models.marker import MarkerRecord
 from ..models.operation import Change, OperationRecord, OperationResult, PreviewSummary
-from ..timecode import clamp_frame
 from ..utils import proxy_id
 
 
@@ -82,7 +79,30 @@ class MarkerService:
         }.get(sort, lambda value: value.start_frame)
         return sorted(result, key=key)
 
+    def _scope_error(self, record):
+        """Never let a stale editor/history entry write into a different scope."""
+        try:
+            context = self.context_service.refresh_context()
+            if (
+                record.scope_type != "timeline"
+                or not context.timeline
+                or not record.scope_id
+                or proxy_id(context.timeline, context.timeline_id) != record.scope_id
+                or proxy_id(record.source_object) != record.scope_id
+            ):
+                return "Open the timeline used by this marker operation and refresh before editing."
+        except Exception as exc:
+            return "Could not verify the marker timeline: %s" % exc
+        return ""
+
     def _validate(self, record, candidate):
+        error = self._scope_error(record)
+        if error:
+            return error
+        if (candidate.scope_type, candidate.scope_id) != (record.scope_type, record.scope_id):
+            return "A marker edit cannot change its owning timeline."
+        if candidate.frame != candidate.start_frame:
+            return "Marker frame and start are inconsistent."
         if candidate.color not in MARKER_COLORS:
             return "Unsupported marker color: %s" % candidate.color
         if candidate.duration_frames < 1:
@@ -95,7 +115,7 @@ class MarkerService:
         try:
             lower = int(timeline.GetStartFrame())
             upper = int(timeline.GetEndFrame())
-            # Timeline marker frame ids are relative offsets even when timeline start is non-zero.
+            # Preserve the existing relative-frame convention in this safety fix.
             span = max(0, upper - lower)
             if candidate.start_frame > span or candidate.end_frame > span:
                 return "Marker range is outside the timeline."
@@ -129,7 +149,10 @@ class MarkerService:
     def _matches(info, record):
         if not info:
             return False
-        duration = int(marker_info_value(info, "duration", "Duration", default=1) or 1)
+        try:
+            duration = int(marker_info_value(info, "duration", "Duration", default=1) or 1)
+        except (TypeError, ValueError):
+            return False
         custom = marker_info_value(info, "customData", "custom_data", default=None)
         if custom is None:
             try:
@@ -147,7 +170,7 @@ class MarkerService:
         )
 
     def replace_marker(self, original, candidate, record_history=True, label="Edit marker"):
-        """Validate, delete, recreate, verify, and rollback if recreation fails."""
+        """Validate, delete, recreate, verify, and conservatively restore on failure."""
         error = self._validate(original, candidate)
         if error:
             return OperationResult(False, failed=1, errors=[error])
@@ -159,7 +182,7 @@ class MarkerService:
         current = self._marker_at_frame(markers, original.frame)
         if not self._matches(current, original):
             return OperationResult(False, failed=1, errors=["The marker changed in Resolve. Refresh before editing."])
-        if candidate.start_frame != original.frame and candidate.start_frame in markers:
+        if candidate.start_frame != original.frame and self._marker_at_frame(markers, candidate.start_frame) is not None:
             return OperationResult(False, failed=1, errors=["Another marker already exists at the target frame."])
         if self._snapshot(original) == self._snapshot(candidate):
             return OperationResult(True, unchanged=1)
@@ -181,30 +204,39 @@ class MarkerService:
                 self.history.add(OperationRecord("marker", label, [original.stable_key], {original.stable_key: self._snapshot(original)}, {original.stable_key: self._snapshot(candidate)}))
             return OperationResult(True, changed=1, details=[{"before": self._snapshot(original), "after": self._snapshot(candidate)}])
 
+        warnings = []
         try:
-            # Remove an unverified partial replacement before restoring.
-            replacement = self._marker_at_frame(timeline.GetMarkers(), candidate.start_frame)
-            if replacement:
-                timeline.DeleteMarkerAtFrame(candidate.start_frame)
-            timeline.AddMarker(original.frame, original.color, original.name, original.note, original.duration_frames, original.custom_data or "")
+            # An unverified occupant may belong to another user/tool. Never delete
+            # it as rollback cleanup: restore only into an empty original slot.
+            markers = dict(timeline.GetMarkers() or {})
+            occupant = self._marker_at_frame(markers, original.frame)
+            if occupant is None:
+                timeline.AddMarker(original.frame, original.color, original.name, original.note, original.duration_frames, original.custom_data or "")
             rollback_verified = self._matches(self._marker_at_frame(timeline.GetMarkers(), original.frame), original)
+            if candidate.start_frame != original.frame and self._marker_at_frame(timeline.GetMarkers(), candidate.start_frame) is not None:
+                warnings.append("An unverified marker remains at the target frame; it was left intact for review.")
         except Exception:
             rollback_verified = False
+        details = [{"original": self._snapshot(original), "attempted": self._snapshot(candidate)}]
         if rollback_verified:
-            return OperationResult(False, failed=1, errors=["Marker update failed; the original marker was restored."])
-        return OperationResult(False, failed=1, errors=["CRITICAL: marker update and rollback both failed. Restore the marker manually from the operation details."], details=[{"original": self._snapshot(original)}])
+            return OperationResult(False, failed=1, warnings=warnings, errors=["Marker update failed; the original marker was restored."], details=details)
+        return OperationResult(False, failed=1, warnings=warnings, errors=["CRITICAL: marker update and rollback both failed. Restore the marker manually from the operation details."], details=details)
 
     def add_marker(self, timeline, frame, color, name, note="", duration=1, custom_data="", label="Add marker"):
         """Add and verify a marker, recording a guarded Undo operation."""
         context = self.context_service.refresh_context()
         scope_id = proxy_id(timeline, context.timeline_id)
-        frame = int(frame); duration = max(1, int(duration))
+        try:
+            frame = int(frame)
+            duration = int(duration)
+        except (TypeError, ValueError):
+            return OperationResult(False, failed=1, errors=["Marker frame and duration must be integers."])
         record = MarkerRecord("timeline", scope_id, frame, frame, frame + duration - 1, duration, str(color), str(name), str(note), custom_data or None, source_object=timeline)
         error = self._validate(record, record)
         if error:
             return OperationResult(False, failed=1, errors=[error])
         try:
-            if self._marker_at_frame(timeline.GetMarkers(), frame):
+            if self._marker_at_frame(timeline.GetMarkers(), frame) is not None:
                 return OperationResult(False, failed=1, errors=["A marker already exists at the playhead."])
             # Some Resolve bindings return None even after a successful write.
             # The authoritative result is the marker read back from the timeline.
@@ -225,7 +257,9 @@ class MarkerService:
             return record.copy(frame=new_start, start_frame=new_start, end_frame=new_start + record.duration_frames - 1)
         new_start = record.start_frame if start is None else int(start)
         if duration is not None:
-            new_duration = max(1, int(duration))
+            new_duration = int(duration)
+            if new_duration < 1:
+                raise ValueError("Marker duration must be at least one frame.")
             new_end = new_start + new_duration - 1
         elif end is not None:
             new_end = int(end)
@@ -234,6 +268,16 @@ class MarkerService:
             new_end = record.end_frame
             new_duration = new_end - new_start + 1
         return record.copy(frame=new_start, start_frame=new_start, end_frame=new_end, duration_frames=new_duration)
+
+    def _candidate_for_change(self, change):
+        record = change.source
+        if change.field == "range":
+            return change.context["candidate"]
+        if change.field == "start_frame":
+            return self.edit_range(record, move=int(change.after) - record.start_frame)
+        if change.field == "duration_frames":
+            return self.edit_range(record, duration=int(change.after))
+        return record.copy(**{change.field: change.after})
 
     def preview_batch(self, records, field, operation, value):
         changes = []
@@ -245,6 +289,7 @@ class MarkerService:
             else:
                 before = getattr(record, field)
             after, status = before, "Ready"
+            candidate = None
             try:
                 if field in ("name", "note"):
                     text = str(value or "")
@@ -286,14 +331,72 @@ class MarkerService:
             except Exception:
                 status = "Invalid"
             if before == after and status == "Ready": status = "Unchanged"
-            context = {"candidate": candidate} if field == "range" and status != "Invalid" else {}
-            changes.append(Change(record.stable_key, record.name or "Marker", field, before, after, status, source=record, context=context))
+            context = {"candidate": candidate} if field == "range" and candidate is not None else {}
+            change = Change(record.stable_key, record.name or "Marker", field, before, after, status, source=record, context=context)
+            if change.changed and field != "delete":
+                try:
+                    if self._validate(record, self._candidate_for_change(change)):
+                        change.status = "Invalid"
+                except Exception:
+                    change.status = "Invalid"
+            changes.append(change)
         return PreviewSummary(changes)
+
+    def _ordered_changes(self, changes):
+        """Preflight moving batches and order dependencies without deleting first.
+
+        For example, move B 20->30 before A 10->20. Cycles and duplicate
+        destinations are refused rather than staging markers destructively.
+        """
+        ready = [change for change in changes if change.changed]
+        candidates = {id(change): self._candidate_for_change(change) for change in ready if change.field != "delete"}
+        if not any(candidate.start_frame != change.source.frame for change in ready if (candidate := candidates.get(id(change))) is not None):
+            return list(changes)
+        origins = {(change.source.scope_id, change.source.frame) for change in ready}
+        if len(origins) != len(ready):
+            raise ValueError("The batch contains more than one edit for the same marker.")
+        targets = set()
+        for change in ready:
+            source = change.source
+            error = self._scope_error(source)
+            if error:
+                raise ValueError(error)
+            markers = dict(source.source_object.GetMarkers() or {})
+            if not self._matches(self._marker_at_frame(markers, source.frame), source):
+                raise ValueError("A marker changed since preview. Refresh and preview again.")
+            candidate = candidates.get(id(change))
+            if candidate is None:
+                continue
+            error = self._validate(source, candidate)
+            if error:
+                raise ValueError(error)
+            target = (source.scope_id, candidate.start_frame)
+            if target in targets:
+                raise ValueError("Multiple markers would occupy the same target frame.")
+            targets.add(target)
+            if self._marker_at_frame(markers, candidate.start_frame) is not None and target not in origins:
+                raise ValueError("An unselected marker occupies a target frame. No batch changes were applied.")
+        ordered = [change for change in changes if not change.changed]
+        pending = list(ready)
+        while pending:
+            occupied = {(change.source.scope_id, change.source.frame) for change in pending}
+            for index, change in enumerate(pending):
+                candidate = candidates.get(id(change))
+                if candidate is None or candidate.start_frame == change.source.frame or (candidate.scope_id, candidate.start_frame) not in occupied:
+                    ordered.append(pending.pop(index))
+                    break
+            else:
+                raise ValueError("The batch contains a marker-position cycle. No changes were applied.")
+        return ordered
 
     def apply_preview(self, preview, label="Batch marker edit"):
         result = OperationResult(True)
         before, after, keys = {}, {}, []
-        for change in preview.changes:
+        try:
+            changes = self._ordered_changes(preview.changes)
+        except Exception as exc:
+            return OperationResult(False, failed=max(1, preview.changed), errors=[str(exc)])
+        for change in changes:
             if not change.changed:
                 result.unchanged += 1
                 if change.status not in ("Ready", "Unchanged"):
@@ -301,11 +404,10 @@ class MarkerService:
                 continue
             record = change.source
             if change.field == "delete":
-                record = change.source
                 valid = False
                 try:
                     markers = dict(record.source_object.GetMarkers() or {})
-                    valid = self._matches(self._marker_at_frame(markers, record.frame), record)
+                    valid = not self._scope_error(record) and self._matches(self._marker_at_frame(markers, record.frame), record)
                     if valid:
                         record.source_object.DeleteMarkerAtFrame(record.frame)
                     verified = self._marker_at_frame(record.source_object.GetMarkers(), record.frame) is None
@@ -319,14 +421,7 @@ class MarkerService:
                 else:
                     result.failed += 1; result.errors.append("Could not safely delete %s." % change.label)
                 continue
-            if change.field == "range":
-                candidate = change.context["candidate"]
-            elif change.field == "start_frame":
-                candidate = self.edit_range(record, move=int(change.after) - record.start_frame)
-            elif change.field == "duration_frames":
-                candidate = self.edit_range(record, duration=int(change.after))
-            else:
-                candidate = record.copy(**{change.field: change.after})
+            candidate = self._candidate_for_change(change)
             item = self.replace_marker(record, candidate, record_history=False, label=label)
             result.absorb(item)
             if item.success and item.changed:
@@ -339,56 +434,59 @@ class MarkerService:
         return result
 
     def undo(self, operation):
+        """Compare the complete recorded after-state in its original timeline.
+
+        Reverse actual execution order so dependent batch moves remain reversible.
+        Never compare a freshly read marker to itself as an undo conflict check.
+        """
         result = OperationResult(True)
-        current_records = self.list_markers()
-        current_by_state = {(item.start_frame, item.name, item.color): item for item in current_records}
         context = self.context_service.refresh_context()
-        for key in operation.object_ids:
+        timeline = context.timeline
+        if not timeline:
+            return OperationResult(False, failed=1, errors=["Open the timeline used by this marker operation."])
+        current_scope = proxy_id(timeline, context.timeline_id)
+        for key in reversed(operation.object_ids):
             before = operation.before.get(key)
             after = operation.after.get(key)
             if not before or not after:
-                result.failed += 1
-                result.errors.append("History data is incomplete for a marker.")
-                continue
-            if before.get("deleted"):
-                current = current_by_state.get((after["start_frame"], after["name"], after["color"]))
-                if not current or not self._matches(self._marker_at_frame(current.source_object.GetMarkers(), current.frame), current):
-                    result.failed += 1; result.errors.append("The added marker no longer matches the value Resolve Hub applied."); continue
-                try:
-                    current.source_object.DeleteMarkerAtFrame(current.frame)
-                    verified = self._marker_at_frame(current.source_object.GetMarkers(), current.frame) is None
-                except Exception:
-                    verified = False
-                if verified: result.changed += 1
-                else: result.failed += 1; result.errors.append("Resolve could not remove the added marker.")
-                continue
-            if after.get("deleted"):
-                timeline = context.timeline
-                if not timeline:
-                    result.failed += 1; result.errors.append("Open the timeline used by this marker operation."); continue
-                try:
-                    current_scope = proxy_id(timeline, context.timeline_id)
-                    occupied = self._marker_at_frame(timeline.GetMarkers(), before["start_frame"]) is not None
-                except Exception:
-                    current_scope, occupied = "", True
-                if current_scope != before.get("scope_id") or occupied:
-                    result.failed += 1; result.errors.append("The deleted marker cannot be restored safely in the current timeline."); continue
+                result.failed += 1; result.errors.append("History data is incomplete for a marker."); continue
+            states = [state for state in (before, after) if not state.get("deleted")]
+            if not states or any(state.get("scope_type") != "timeline" or state.get("scope_id") != current_scope for state in states):
+                result.failed += 1; result.errors.append("Open the original timeline before undoing this marker operation."); continue
+            try:
+                markers = dict(timeline.GetMarkers() or {})
+                if before.get("deleted"):
+                    expected = MarkerRecord(source_object=timeline, **after)
+                    info = self._marker_at_frame(markers, expected.frame)
+                    if info is None:
+                        result.unchanged += 1
+                        continue
+                    if not self._matches(info, expected):
+                        result.failed += 1; result.errors.append("The added marker changed after the operation; undo skipped."); continue
+                    timeline.DeleteMarkerAtFrame(expected.frame)
+                    verified = self._marker_at_frame(timeline.GetMarkers(), expected.frame) is None
+                    if verified: result.changed += 1
+                    else: result.failed += 1; result.errors.append("Resolve could not remove the added marker.")
+                    continue
                 original = MarkerRecord(source_object=timeline, **before)
-                try:
+                original_info = self._marker_at_frame(markers, original.frame)
+                if self._matches(original_info, original):
+                    # A previous partial undo already restored this entry.
+                    result.unchanged += 1
+                    continue
+                if after.get("deleted"):
+                    if original_info is not None:
+                        result.failed += 1; result.errors.append("The deleted marker's original frame is occupied; undo skipped."); continue
                     timeline.AddMarker(original.frame, original.color, original.name, original.note, original.duration_frames, original.custom_data or "")
                     verified = self._matches(self._marker_at_frame(timeline.GetMarkers(), original.frame), original)
-                except Exception:
-                    verified = False
-                if verified: result.changed += 1
-                else: result.failed += 1; result.errors.append("Resolve could not restore the deleted marker.")
-                continue
-            current = current_by_state.get((after["start_frame"], after["name"], after["color"]))
-            if not current:
-                result.failed += 1
-                result.errors.append("A marker no longer matches the value Resolve Hub applied.")
-                continue
-            original = MarkerRecord(source_object=current.source_object, **before)
-            item = self.replace_marker(current, original, record_history=False, label="Undo " + operation.label)
-            result.absorb(item)
+                    if verified: result.changed += 1
+                    else: result.failed += 1; result.errors.append("Resolve could not restore the deleted marker.")
+                    continue
+                expected = MarkerRecord(source_object=timeline, **after)
+                if not self._matches(self._marker_at_frame(markers, expected.frame), expected):
+                    result.failed += 1; result.errors.append("The marker changed after the operation; undo skipped."); continue
+                result.absorb(self.replace_marker(expected, original, record_history=False, label="Undo " + operation.label))
+            except Exception as exc:
+                result.failed += 1; result.errors.append("Marker undo failed: %s" % exc)
         result.success = result.failed == 0
         return result
