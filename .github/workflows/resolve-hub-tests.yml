@@ -1,0 +1,33 @@
+name: Resolve Hub tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: resolve-hub-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Runtime and source revision
+        run: |
+          python3 --version
+          git rev-parse HEAD
+      - name: Run unit and Resolve mock tests
+        run: python3 -m unittest discover -s tests -v
