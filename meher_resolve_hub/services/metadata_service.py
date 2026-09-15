@@ -97,7 +97,8 @@ class MetadataService:
         clip = record.media_pool_item
         try: current = str((clip.GetMetadata() or {}).get(field, ""))
         except Exception as exc: return OperationResult(False, failed=1, errors=["Could not read metadata: %s" % exc])
-        if expected_before is not None and current != str(expected_before):
+        expected_before = record.metadata.get(field, "") if expected_before is None else expected_before
+        if current != str(expected_before):
             return OperationResult(False, failed=1, errors=["%s changed after preview for %s; refresh and preview again." % (field, record.name)])
         value = "" if value is None else str(value)
         if current == value:

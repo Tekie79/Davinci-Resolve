@@ -26,8 +26,11 @@ class HealthService:
         expected_resolutions = {str(item).replace(" ", "").lower() for item in (expected_resolutions or []) if item}
         required_fields = list(required_fields or [])
         expected_codecs = {str(item).casefold() for item in (expected_codecs or []) if item}
-        used_ids = set(used_ids or [])
+        usage_known = used_ids is not None
+        used_ids = set(used_ids) if usage_known else set()
         issues, skipped = [], {}
+        if not usage_known:
+            skipped["Unused"] = "Timeline usage is unknown; no unused classification was made."
         path_groups, signature_groups = {}, {}
         for record in records:
             props, meta = record.properties, record.metadata
@@ -77,7 +80,7 @@ class HealthService:
             if path: path_groups.setdefault(os.path.normcase(os.path.normpath(path)), []).append(record)
             filename = str(props.get("File Name") or Path(path).name or record.name).casefold()
             signature_groups.setdefault((filename, str(props.get("Duration") or props.get("Frames") or "")), []).append(record)
-            if used_ids and record.unique_id not in used_ids:
+            if usage_known and record.unique_id not in used_ids:
                 issues.append(HealthIssue("Unused", "Info", record.unique_id, record.name, "Clip is not used in the current timeline."))
 
         for group in path_groups.values():

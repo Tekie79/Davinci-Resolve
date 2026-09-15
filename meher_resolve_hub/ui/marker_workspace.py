@@ -11,7 +11,7 @@ def build(ui):
         warning_panel(ui, "MarkerWarning"),
         ui.HGroup({"Spacing": 8, "Weight": 1}, [
             ui.VGroup({"Weight": 5, "Spacing": 6, "StyleSheet": theme.SURFACE}, [
-                tree(ui, "MarkerTree", ("#", "Name", "Color", "Start", "End", "Duration", "Notes"), style_sheet=theme.MARKER_TREE),
+                tree(ui, "MarkerTree", ("Preview", "Name", "Color", "Start", "End", "Duration", "Notes"), style_sheet=theme.MARKER_TREE),
                 ui.HGroup({"Spacing": 6, "Weight": 0}, [button(ui, "SelectAllMarkers", "Select All"), button(ui, "ClearMarkerSelection", "Clear"), ui.Label({"ID": "MarkerSelectionCount", "Text": "0 selected", "StyleSheet": theme.SUBTITLE, "Weight": 0}), ui.HGap(0, 1), button(ui, "PrevMarker", "Previous"), button(ui, "GoToMarker", "Go To"), button(ui, "NextMarker", "Next")]),
             ]),
             ui.VGroup({"Weight": 3, "Spacing": 6, "StyleSheet": theme.SURFACE}, [
