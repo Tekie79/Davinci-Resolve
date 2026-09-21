@@ -164,3 +164,25 @@ def credential_store_label():
     if platform.system() == "Windows":
         return "Windows Credential Manager / keyring backend"
     return "OS credential store / keyring backend"
+
+
+def test_openai_connection(explicit_key=None, credential_store=None, model="gpt-4o-transcribe-diarize"):
+    """Verify that the configured key can authenticate without exposing it."""
+    key = resolve_openai_api_key(explicit_key, credential_store)
+    if not key:
+        return False, "No OpenAI API key is configured."
+    try:
+        from openai import OpenAI
+    except Exception:
+        return False, "The OpenAI Python package is not installed in this runtime."
+
+    try:
+        client = OpenAI(api_key=key)
+        client.models.retrieve(str(model))
+        return True, "OpenAI connection verified."
+    except Exception as exc:
+        text = str(exc or "OpenAI connection test failed.")
+        # Never echo a key if an SDK/backend unexpectedly embeds it in an error.
+        if key and key in text:
+            text = text.replace(key, "[REDACTED]")
+        return False, "OpenAI connection test failed: %s" % text
