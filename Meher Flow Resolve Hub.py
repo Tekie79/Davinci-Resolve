@@ -32,7 +32,7 @@ for location in (_script_directory(), _runtime_directory()):
     if str(location) not in sys.path:
         sys.path.insert(0, str(location))
 
-WINDOW_ID = "com.meher-flow.resolve-hub.v0322"
+WINDOW_ID = "com.meher-flow.resolve-hub.v0400"
 
 
 def _raise_existing(namespace):

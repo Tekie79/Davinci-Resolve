@@ -18,3 +18,5 @@ speaker-analysis-temp/
 .pytest_cache/
 .coverage
 htmlcov/
+test-results*.txt
+source-snapshot.zip

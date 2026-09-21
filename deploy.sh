@@ -32,7 +32,10 @@ echo "Validating Resolve Hub…"
 "${resolve_python}" -m py_compile \
     "${source_root}/Media Manager.py" \
     "${source_root}/Meher Flow Resolve Hub.py"
-"${resolve_python}" -m unittest discover -s "${source_root}/tests" -q
+"${resolve_python}" -m unittest discover \
+    -s "${source_root}/tests" \
+    -t "${source_root}" \
+    -q
 
 echo "Installing runtime and menu scripts…"
 mkdir -p "${runtime_root}/meher_resolve_hub" "${utility_root}"

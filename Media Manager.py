@@ -102,7 +102,7 @@ class MediaManagerController:
 def main():
     existing = None
     try:
-        existing = globals().get("fusion").UIManager.FindWindow("com.meher-flow.resolve-hub.v0322")
+        existing = globals().get("fusion").UIManager.FindWindow("com.meher-flow.resolve-hub.v0400")
     except Exception:
         pass
     if existing:

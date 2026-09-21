@@ -1,6 +1,7 @@
 """Shared lazy thumbnail cache with playhead restoration."""
 
 import hashlib
+import re
 import json
 import shutil
 import subprocess
@@ -14,7 +15,7 @@ from .preferences import user_data_dir
 class ThumbnailCache:
     # Version 4 invalidates old undersized frames and captures made before
     # playhead-settle verification was added.
-    CACHE_VERSION = "4"
+    CACHE_VERSION = "5"
 
     def __init__(self, context_service, folder=None, enabled=True, size=(960, 540), settle_delay=0.12, export_timeout=1.5):
         self.context_service = context_service
@@ -33,7 +34,10 @@ class ThumbnailCache:
 
     def get(self, key):
         path = self.path_for(key)
-        return path if path.is_file() else None
+        try:
+            return path if path.is_file() and path.stat().st_size > 0 else None
+        except OSError:
+            return None
 
     @staticmethod
     def _wait_for_timecode(timeline, target, timeout=0.75):
@@ -133,6 +137,8 @@ class ThumbnailCache:
         removed = 0
         if self.folder.is_dir():
             for path in self.folder.glob("*.png"):
+                if not re.fullmatch(r"[0-9a-f]{40}\.png", path.name):
+                    continue
                 try:
                     path.unlink()
                     removed += 1
@@ -145,6 +151,8 @@ class ThumbnailCache:
         removed = 0
         if self.folder.is_dir():
             for path in self.folder.glob("*.png"):
+                if not re.fullmatch(r"[0-9a-f]{40}\.png", path.name):
+                    continue
                 if path.name not in valid:
                     try:
                         path.unlink()

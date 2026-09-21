@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from ..models.operation import OperationResult
+from ..file_io import publish_new_file
 from ..models.still import StillQueueItem
 from ..timecode import timeline_frame_to_timecode
 from ..utils import collect_bins, find_exported_png, png_filename, proxy_id, safe_filename_component
@@ -52,20 +53,49 @@ class StillService:
         self.preview_path = None
 
     def _export_current(self, project, timeline, destination):
-        exported = False
-        method = getattr(project, "ExportCurrentFrameAsStill", None)
-        if callable(method):
-            try: exported = bool(method(str(destination)))
-            except Exception: exported = False
-        if not exported:
-            try:
-                still = timeline.GrabStill()
-                album = project.GetGallery().GetCurrentStillAlbum()
-                exported = bool(still and album and album.ExportStills([still], str(destination.parent), destination.stem, "png"))
-            except Exception:
-                exported = False
-        actual = find_exported_png(destination.parent, destination)
-        return actual if exported and actual else None
+        # Every export has an isolated discovery namespace and exclusive publication.
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() or destination.is_symlink():
+            raise FileExistsError("Output already exists: %s" % destination)
+        with tempfile.TemporaryDirectory(prefix=".resolve-hub-export-", dir=str(destination.parent)) as folder:
+            requested = Path(folder) / "frame.png"
+            method = getattr(project, "ExportCurrentFrameAsStill", None)
+            direct_failed = False
+            if callable(method):
+                try:
+                    method(str(requested))
+                except Exception:
+                    direct_failed = True
+            actual = None
+            if callable(method) and not direct_failed:
+                deadline = time.monotonic() + 0.5
+                while True:
+                    if requested.is_file() and requested.stat().st_size > 0:
+                        actual = requested
+                        break
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.02)
+            if actual is None:
+                if requested.exists():
+                    requested.unlink()
+                try:
+                    captured = timeline.GrabStill()
+                    album = project.GetGallery().GetCurrentStillAlbum()
+                    if captured and album:
+                        album.ExportStills([captured], folder, "frame", "png")
+                except Exception:
+                    return None
+                deadline = time.monotonic() + 0.5
+                while True:
+                    actual = find_exported_png(folder, requested)
+                    if actual and actual.stat().st_size > 0:
+                        break
+                    if time.monotonic() >= deadline:
+                        return None
+                    time.sleep(0.02)
+            return publish_new_file(actual, destination)
 
     @staticmethod
     def _wait_for_timecode(timeline, target, timeout=0.75):
@@ -114,7 +144,7 @@ class StillService:
         except Exception as exc: raise StillError("Could not create the output folder: %s" % exc)
         destination = folder / png_filename(filename)
         if destination.exists(): raise StillError("A file named '%s' already exists." % destination.name)
-        try: shutil.copy2(str(self.preview_path), str(destination))
+        try: publish_new_file(self.preview_path, destination)
         except Exception as exc: raise StillError("Could not save the PNG: %s" % exc)
         imported = self._import_paths(project, target_bin, [destination])
         if not imported.success:
@@ -175,12 +205,20 @@ class StillService:
 
     @staticmethod
     def detect_conflicts(queue, output_folder):
-        folder, seen = Path(output_folder), set()
+        folder = Path(output_folder)
+        counts = {}
         for item in queue:
-            key = item.filename.casefold()
-            if key in seen or (folder / item.filename).exists(): item.status = "Conflict"
-            else: item.status = "Queued"
-            seen.add(key)
+            counts[item.filename.casefold()] = counts.get(item.filename.casefold(), 0) + 1
+        for item in queue:
+            if item.status in ("Captured", "Imported"):
+                continue
+            name = str(item.filename)
+            if name != png_filename(name) or Path(name).name != name:
+                item.status = "Invalid"
+            elif counts[name.casefold()] > 1 or (folder / name).exists() or (folder / name).is_symlink():
+                item.status = "Conflict"
+            else:
+                item.status = "Queued"
         return queue
 
     def execute_queue(self, queue, output_folder, target_bin=None, import_to_bin=True):
@@ -189,34 +227,69 @@ class StillService:
             return OperationResult(False, errors=["Open the source project and timeline first."])
         if any(item.timeline_id != context.timeline_id for item in queue):
             return OperationResult(False, errors=["The capture queue belongs to another timeline."])
-        folder = Path(output_folder)
+        folder = Path(os.path.expandvars(os.path.expanduser(str(output_folder))))
         try:
             folder.mkdir(parents=True, exist_ok=True)
+            self.detect_conflicts(queue, folder)
         except Exception as exc:
-            return OperationResult(False, failed=len(queue), errors=["Could not create the output folder: %s" % exc])
+            return OperationResult(False, failed=len(queue), errors=["Could not prepare the output folder: %s" % exc])
         previous = context.current_timecode
         result, paths = OperationResult(True), []
         try:
             for item in queue:
-                if item.status == "Conflict": result.unchanged += 1; result.warnings.append("Skipped conflict: %s" % item.filename); continue
+                if item.status in ("Captured", "Imported"):
+                    result.unchanged += 1
+                    continue
+                if item.status in ("Conflict", "Invalid"):
+                    result.failed += 1
+                    result.errors.append("Skipped %s output: %s" % (item.status.lower(), item.filename))
+                    continue
+                current = self.context_service.refresh_context()
+                if current.project_id != context.project_id or current.timeline_id != context.timeline_id:
+                    result.failed += 1
+                    result.errors.append("Resolve context changed during capture; remaining jobs were not executed.")
+                    break
                 try:
                     context.timeline.SetCurrentTimecode(item.timecode)
-                except Exception:
-                    item.status = "Failed"; result.failed += 1; result.errors.append("Could not navigate to %s." % item.timecode); continue
-                if not self._wait_for_timecode(context.timeline, item.timecode):
-                    item.status = "Failed"; result.failed += 1; result.errors.append("Resolve did not reach %s before capture." % item.timecode); continue
-                destination = folder / item.filename
-                actual = self._export_current(context.project, context.timeline, destination)
-                if not actual:
-                    item.status = "Failed"; result.failed += 1; result.errors.append("Capture failed: %s" % item.source_label); continue
-                if actual != destination:
-                    shutil.move(str(actual), str(destination))
-                item.output_path = str(destination); item.thumbnail_path = str(destination); item.status = "Captured"; paths.append(destination); self.gallery.append(item); result.changed += 1
+                    if not self._wait_for_timecode(context.timeline, item.timecode):
+                        raise StillError("Resolve did not reach %s before capture." % item.timecode)
+                    destination = folder / item.filename
+                    actual = self._export_current(context.project, context.timeline, destination)
+                    if not actual:
+                        raise StillError("Capture failed: %s" % item.source_label)
+                    item.output_path = str(destination)
+                    item.thumbnail_path = str(destination)
+                    item.status = "Captured"
+                    paths.append(destination)
+                    if not any(value.id == item.id for value in self.gallery):
+                        self.gallery.append(item)
+                    result.changed += 1
+                    result.details.append({"source": item.source_label, "path": str(destination), "stage": "captured"})
+                except FileExistsError:
+                    item.status = "Conflict"
+                    result.failed += 1
+                    result.errors.append("Output appeared after preview and was preserved: %s" % item.filename)
+                except Exception as exc:
+                    item.status = "Failed"
+                    result.failed += 1
+                    result.errors.append("%s: %s" % (item.source_label, exc))
         finally:
-            try: context.timeline.SetCurrentTimecode(previous)
-            except Exception: result.warnings.append("Resolve could not restore the previous playhead position.")
+            try:
+                current = self.context_service.refresh_context()
+                if current.project_id == context.project_id and current.timeline_id == context.timeline_id:
+                    context.timeline.SetCurrentTimecode(previous)
+                    if not self._wait_for_timecode(context.timeline, previous):
+                        result.warnings.append("Resolve did not restore the previous playhead position.")
+                else:
+                    result.warnings.append("Context changed; the Hub did not switch it back.")
+            except Exception as exc:
+                result.warnings.append("Could not restore the playhead: %s" % exc)
         if import_to_bin and paths:
-            result.absorb(self._import_paths(context.project, target_bin, paths))
+            imported = self._import_paths(context.project, target_bin, paths)
+            result.failed += imported.failed
+            result.errors.extend(imported.errors)
+            result.warnings.extend(imported.warnings)
+            result.details.append({"stage": "import", "imported": imported.changed, "failed": imported.failed})
         result.success = result.failed == 0
         return result
 

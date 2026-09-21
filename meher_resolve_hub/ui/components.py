@@ -61,6 +61,11 @@ def section(ui, title, count_id=None):
 
 def tree(ui, identity, headers, weight=1, style_sheet=None):
     properties = {"ID": identity, "ColumnCount": len(headers), "HeaderLabels": list(headers), "AlternatingRowColors": True, "SelectionMode": "ExtendedSelection", "Weight": weight}
+    properties.update({"UniformRowHeights": True, "RootIsDecorated": False, "Indentation": 0, "WordWrap": False})
+    if identity == "MarkerTree":
+        # Logical selection is painted by the Hub. No native select/deselect
+        # oscillation, and native highlight cannot hide marker colors.
+        properties.update({"SelectionMode": "NoSelection", "IconSize": [96, 54]})
     properties["StyleSheet"] = style_sheet or theme.TREE
     return ui.Tree(properties)
 
