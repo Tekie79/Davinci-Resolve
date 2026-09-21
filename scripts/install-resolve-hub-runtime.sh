@@ -26,8 +26,8 @@ mkdir -p "$RUNTIME_DIR" "$BIN_DIR" "$UTILITY_DIR"
 rm -rf "$RUNTIME_DIR/meher_resolve_hub"
 cp -R "$ROOT/meher_resolve_hub" "$RUNTIME_DIR/meher_resolve_hub"
 
-cp "$ROOT/Meher Flow Resolve Hub.py" "$UTILITY_DIR/Meher Flow Resolve Hub.py"
-cp "$ROOT/Media Manager.py" "$UTILITY_DIR/Media Manager.py"
+install -m 0755 "$ROOT/Meher Flow Resolve Hub.py" "$UTILITY_DIR/Meher Flow Resolve Hub.py"
+install -m 0755 "$ROOT/Media Manager.py" "$UTILITY_DIR/Media Manager.py"
 
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
   "$PYTHON" -m venv "$VENV_DIR"
