@@ -110,3 +110,42 @@ for API limitations and deliberate safe degradations.
 ## Speaker analysis boundary
 
 Resolve can write duration markers on TimelineItem clips through the scripting API. The documented scripting API does not expose Resolve's internal transcription/speaker-segment list, so `SpeakerMarkerService` accepts either precomputed speaker segments or an injected analyzer adapter. The high-level `analyze_select_speakers_and_mark()` operation handles marker planning, clip-boundary splitting, idempotent replacement, readback verification, and rollback.
+
+
+## Codex/OpenAI speaker diarization
+
+Speaker dialogue marking does **not** depend on Resolve captions or Resolve
+transcription.
+
+Preferred flow:
+
+1. `export_select_timeline_audio(resolve)` renders the current Select timeline
+   as a temporary audio-only WAV containing the actual edited/synced dialogue.
+2. `analyze_audio_with_openai(audio_path, ...)` sends that audio to
+   `gpt-4o-transcribe-diarize` and returns speaker start/end ranges.
+3. `apply_select_speaker_markers(resolve, segments, ...)` writes verified
+   duration clip markers to the matching TimelineItems.
+
+When the same Python runtime has OpenAI access, the single-call facade
+`analyze_select_speakers_and_mark(resolve, ...)` performs the complete flow.
+
+Requirements for automatic analysis:
+
+```bash
+export OPENAI_API_KEY="..."
+python -m pip install openai
+```
+
+The API key is read from the environment and must not be committed to Git.
+
+For Yekermo Sew, transcript text is optional and disabled by default. Speaker
+timing and confirmed voice references are the primary signals, which avoids
+making the workflow depend on accurate Amharic or mixed Amharic/English text.
+
+The OpenAI transcription endpoint has a per-file upload limit; the analyzer
+automatically splits oversized WAV input into overlapping chunks, restores
+global timestamps, and discards duplicated overlap segments by ownership.
+
+Known-speaker reference clips can be supplied to the diarization model. The
+OpenAI API supports up to four named speaker references per request. Unknown
+voices stay anonymous rather than being guessed.
