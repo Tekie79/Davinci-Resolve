@@ -1,6 +1,6 @@
 # Meher Flow Resolve Hub
 
-**Meher Flow Resolve Hub v0.3.22** is a modular DaVinci Resolve companion built
+**Meher Flow Resolve Hub v0.3.23** is a modular DaVinci Resolve companion built
 with Fusion UIManager. It centralizes marker, metadata, clip-name, still, and
 media-health work into one matte Meher Flow Amber workstation.
 
@@ -13,6 +13,11 @@ The P0 interaction model is:
 - **Markers** — browse/filter/sort timeline markers, navigate, edit details and
   frame-accurate ranges, nudge by 1/5/10 frames, apply presets, batch preview,
   safely replace markers with rollback, create still queues, and Undo.
+- **Speaker dialogue markers** — high-level service for Select timelines that
+  consumes timed speaker turns (or an injected diarization adapter), maps them
+  to clip-relative TimelineItem range markers, preserves manual markers,
+  replaces only its own generated markers on rerun, verifies writes, and rolls
+  back the generated marker batch on failure.
 - **Metadata** — browse selected/current-bin clips, inspect and edit fields,
   batch set/clear/append/prepend/find-replace/copy, preview, apply, Undo, and
   export/import CSV previews.
@@ -46,11 +51,12 @@ meher_resolve_hub/
 ├── navigation.py          playhead and return-position state
 ├── timecode.py            SMPTE/frame conversion, including drop-frame
 ├── capabilities.py        guarded Resolve API detection
+├── speaker_markers.py      one-call Codex/MCP speaker-marker facade
 ├── thumbnails.py          shared lazy thumbnail cache
 ├── history.py             operation history and Undo dispatch
 ├── preferences.py         cross-platform JSON settings
 ├── models/                stable records, previews, results, reports
-├── services/              marker/metadata/rename/still/health workflows
+├── services/              marker/speaker/metadata/rename/still/health workflows
 └── ui/                    one shell plus modular workspace layouts
 ```
 
@@ -100,3 +106,7 @@ The suite contains Resolve proxy mocks and pure-logic tests. See
 [`MANUAL_RESOLVE_ACCEPTANCE.md`](./MANUAL_RESOLVE_ACCEPTANCE.md) for the live
 Resolve matrix and [`P0_IMPLEMENTATION_NOTES.md`](./P0_IMPLEMENTATION_NOTES.md)
 for API limitations and deliberate safe degradations.
+
+## Speaker analysis boundary
+
+Resolve can write duration markers on TimelineItem clips through the scripting API. The documented scripting API does not expose Resolve's internal transcription/speaker-segment list, so `SpeakerMarkerService` accepts either precomputed speaker segments or an injected analyzer adapter. The high-level `analyze_select_speakers_and_mark()` operation handles marker planning, clip-boundary splitting, idempotent replacement, readback verification, and rollback.
