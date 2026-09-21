@@ -314,19 +314,31 @@ def credential_store_label():
 
 
 def test_openai_connection(explicit_key=None, credential_store=None, model="gpt-4o-transcribe-diarize"):
-    """Verify that the configured key can authenticate without exposing it."""
+    """Verify authentication with the models endpoint using only stdlib HTTP."""
     key = resolve_openai_api_key(explicit_key, credential_store)
     if not key:
         return False, "No OpenAI API key is configured."
-    try:
-        from openai import OpenAI
-    except Exception:
-        return False, "The OpenAI Python package is not installed in this runtime."
 
     try:
-        client = OpenAI(api_key=key)
-        client.models.retrieve(str(model))
-        return True, "OpenAI connection verified."
+        from urllib.parse import quote
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError
+        url = "https://api.openai.com/v1/models/%s" % quote(str(model), safe="")
+        request = Request(
+            url,
+            headers={
+                "Authorization": "Bearer " + key,
+                "User-Agent": "Meher-Flow-Resolve-Hub",
+            },
+            method="GET",
+        )
+        with urlopen(request, timeout=20) as response:
+            status = int(getattr(response, "status", 200) or 200)
+        if 200 <= status < 300:
+            return True, "OpenAI connection verified."
+        return False, "OpenAI connection test returned HTTP %s." % status
+    except HTTPError as exc:
+        return False, "OpenAI connection test returned HTTP %s." % exc.code
     except Exception as exc:
         text = str(exc or "OpenAI connection test failed.")
         if key and key in text:
