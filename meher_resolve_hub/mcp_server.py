@@ -183,7 +183,7 @@ def _result_dict(result):
 
 
 @mcp.tool()
-def resolve_status() -> Dict[str, object]:
+async def resolve_status() -> Dict[str, object]:
     """Return current Resolve context and secure OpenAI credential status."""
     resolve = _resolve()
     project = _project(resolve)
@@ -200,7 +200,7 @@ def resolve_status() -> Dict[str, object]:
 
 
 @mcp.tool()
-def list_select_timelines() -> List[str]:
+async def list_select_timelines() -> List[str]:
     """List Select timelines in the currently open Resolve project."""
     project = _project(_resolve())
     return [
@@ -211,7 +211,7 @@ def list_select_timelines() -> List[str]:
 
 
 @mcp.tool()
-def analyze_select_speakers_and_mark(
+async def analyze_select_speakers_and_mark(
     episode: Optional[int] = None,
     scene: Optional[str] = None,
     timeline_name: Optional[str] = None,
