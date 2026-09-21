@@ -5,6 +5,7 @@ RUNTIME_DIR="${MEHER_RESOLVE_HUB_RUNTIME:-$HOME/Library/Application Support/Mehe
 VENV_DIR="${MEHER_RESOLVE_MCP_VENV:-$HOME/Library/Application Support/Meher Flow/Resolve Hub/mcp-venv}"
 RESOLVE_MODULES="${RESOLVE_PYTHON_MODULES:-/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting/Modules}"
 RESOLVE_SCRIPT_API="${RESOLVE_SCRIPT_API:-/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting}"
+RESOLVE_SCRIPT_LIB="${RESOLVE_SCRIPT_LIB:-/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so}"
 
 PYTHON="${MEHER_RESOLVE_MCP_PYTHON:-$VENV_DIR/bin/python}"
 if [[ ! -x "$PYTHON" ]]; then
@@ -14,6 +15,7 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 
 export RESOLVE_SCRIPT_API
+export RESOLVE_SCRIPT_LIB
 export PYTHONPATH="$RUNTIME_DIR:$RESOLVE_MODULES${PYTHONPATH:+:$PYTHONPATH}"
 
 exec "$PYTHON" -m meher_resolve_hub.mcp_server
