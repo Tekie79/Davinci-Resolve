@@ -45,9 +45,34 @@ version, OS, page, project, timeline, and selection source with each run.
   error includes recovery data.
 - [ ] Undo supported marker edits and verify values.
 
+## AI / OpenAI secure settings
+
+- [ ] Open Settings → AI / OpenAI and confirm the key field is empty on load.
+- [ ] Paste a disposable/test Platform API key and choose Save Securely.
+- [ ] Confirm the field clears immediately and only a masked credential status remains.
+- [ ] Inspect Resolve Hub settings.json and confirm the API key is absent.
+- [ ] On macOS, confirm Keychain contains service `Meher Flow Resolve Hub` / account `openai-api-key`.
+- [ ] Choose Test Connection and confirm success/failure is reported without exposing the key.
+- [ ] Restart Resolve Hub and confirm the stored credential is still detected.
+- [ ] Replace the key and confirm the Keychain value updates.
+- [ ] Choose Remove Key and confirm Resolve Hub reports Not configured.
+
+## Local Codex MCP
+
+- [ ] Run the installed MCP launcher from `~/Library/Application Support/Meher Flow/Resolve Hub/bin/run-resolve-mcp`.
+- [ ] Confirm `codex mcp list` shows `meher-resolve` after registration.
+- [ ] Call `resolve_status` and verify project/timeline plus masked credential state.
+- [ ] Call `list_select_timelines` and verify only Select timelines are returned.
+- [ ] Verify the speaker tool accepts 1-4 character names and refuses more than four.
+- [ ] Verify the OpenAI key is not part of the MCP tool schema or tool output.
+
 ## Speaker dialogue range markers
 
 - [ ] Open a disposable Select timeline with dialogue clips on V1.
+- [ ] Provide 1-4 expected character names and confirm only those available voice references are sent.
+- [ ] With ffmpeg installed, confirm the temporary WAV is compressed to mono MP3 before analysis and removed afterward.
+- [ ] Without ffmpeg, confirm the workflow falls back to WAV and continues.
+- [ ] Confirm MP3 voice references are accepted for known speakers.
 - [ ] Run the high-level operation in preview mode with known timed speaker segments; confirm no clip marker is written.
 - [ ] Apply Mike=Blue and Sam=Yellow ranges; confirm the markers are clip markers on TimelineItems, not timeline markers or Media Pool source markers.
 - [ ] Verify each marker starts at the detected speech start and its duration ends at the detected speech end.
