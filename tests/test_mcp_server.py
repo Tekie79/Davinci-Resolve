@@ -7,6 +7,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from meher_resolve_hub import mcp_server
+from tests.fakes import FakeFolder, FakeMediaPool
 
 
 class MCPServerTests(unittest.TestCase):
@@ -39,6 +40,29 @@ class MCPServerTests(unittest.TestCase):
         signature = inspect.signature(mcp_server.analyze_select_speakers_and_mark)
         self.assertNotIn("openai_api_key", signature.parameters)
         self.assertNotIn("api_key", signature.parameters)
+
+    def test_keyword_rename_tool_has_no_filesystem_rename_argument(self):
+        signature = inspect.signature(mcp_server.rename_clips_from_keywords)
+        self.assertIn("source", signature.parameters)
+        self.assertIn("mode", signature.parameters)
+        self.assertNotIn("file_path", signature.parameters)
+        self.assertNotIn("rename_files", signature.parameters)
+
+    def test_find_reference_bin_by_path(self):
+        ref = FakeFolder("CODEX_REF")
+        stills = FakeFolder("STILLS", children=[ref])
+        media = FakeFolder("01_MEDIA", children=[stills])
+        root = FakeFolder("Master", children=[media])
+        pool = FakeMediaPool(root)
+        found = mcp_server._find_bin_by_path(
+            pool, "Master/01_MEDIA/STILLS/CODEX_REF"
+        )
+        self.assertIs(found, ref)
+
+    def test_visual_cleanup_rejects_non_temp_directory(self):
+        with self.assertRaisesRegex(RuntimeError, "Refusing"):
+            import asyncio
+            asyncio.run(mcp_server.cleanup_visual_analysis_frames("/tmp/not-owned"))
 
 
 if __name__ == "__main__":
