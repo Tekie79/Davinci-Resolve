@@ -1,7 +1,9 @@
 """Temporary Select-timeline audio export for speaker analysis.
 
 This service renders an audio-only WAV from the current Select timeline so an
-external/OpenAI analyzer can inspect the actual edited/synced audio. It restores
+external/OpenAI analyzer can inspect the actual edited/synced audio. When
+ffmpeg is available it compresses that temporary analysis file to mono MP3 to
+reduce upload size; WAV remains the safe fallback. It restores
 the previous render format/codec and render mode when possible. Resolve does not
 expose a complete GetRenderSettings snapshot, so TargetDir/CustomName/export
 flags may remain changed in the Deliver settings after the temporary render.
@@ -9,6 +11,8 @@ flags may remain changed in the Deliver settings after the temporary render.
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import time
 
@@ -73,6 +77,41 @@ class TimelineAudioExportService:
         return "", ""
 
     @staticmethod
+    def _compress_mp3(wav_path, bitrate_kbps=64):
+        """Compress analysis audio with ffmpeg when available."""
+        executable = shutil.which("ffmpeg")
+        if not executable:
+            return None, "ffmpeg is not installed; using WAV for OpenAI analysis."
+        wav_path = Path(wav_path)
+        mp3_path = wav_path.with_suffix(".mp3")
+        command = [
+            executable,
+            "-y",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-i", str(wav_path),
+            "-vn",
+            "-ac", "1",
+            "-b:a", "%dk" % max(32, int(bitrate_kbps)),
+            str(mp3_path),
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+        except Exception as exc:
+            return None, "MP3 compression failed; using WAV: %s" % exc
+        if completed.returncode != 0 or not mp3_path.is_file() or mp3_path.stat().st_size <= 0:
+            message = (completed.stderr or "ffmpeg returned no usable MP3").strip()
+            return None, "MP3 compression failed; using WAV: %s" % message
+        return mp3_path, ""
+
+    @staticmethod
     def _find_output(folder, custom_name):
         folder = Path(folder)
         candidates = []
@@ -89,6 +128,8 @@ class TimelineAudioExportService:
         custom_name=None,
         sample_rate=16000,
         bit_depth=16,
+        preferred_format="mp3",
+        mp3_bitrate_kbps=64,
         timeout_seconds=1800,
         require_select=True,
     ):
@@ -204,9 +245,26 @@ class TimelineAudioExportService:
                 details={"status": status, "output_dir": str(output_root)},
             )
 
+        analysis_output = output
+        analysis_format = "wav"
+        if str(preferred_format or "").lower() == "mp3":
+            compressed, compression_warning = self._compress_mp3(
+                output, bitrate_kbps=mp3_bitrate_kbps
+            )
+            if compressed:
+                analysis_output = compressed
+                analysis_format = "mp3"
+                if output_dir is None:
+                    try:
+                        output.unlink()
+                    except Exception:
+                        pass
+            elif compression_warning:
+                warnings.append(compression_warning)
+
         return TimelineAudioExportResult(
             True,
-            path=str(output),
+            path=str(analysis_output),
             job_id=job_id,
             warnings=warnings,
             details={
@@ -214,8 +272,10 @@ class TimelineAudioExportService:
                 "status": status,
                 "sample_rate_requested": settings["AudioSampleRate"],
                 "bit_depth": int(bit_depth),
-                "format": render_format,
-                "codec": codec,
+                "render_format": render_format,
+                "render_codec": codec,
+                "analysis_format": analysis_format,
+                "mp3_bitrate_kbps": int(mp3_bitrate_kbps) if analysis_format == "mp3" else None,
                 "temporary": output_dir is None,
             },
         )
