@@ -2,7 +2,8 @@
 
 from dataclasses import dataclass
 import importlib.util
-import os
+
+from .credential_service import OpenAICredentialStore
 
 
 @dataclass(frozen=True)
@@ -71,9 +72,9 @@ class CapabilityDetector:
                 "Temporary Select audio export requires Resolve render APIs.",
             ),
             "openai_audio_diarization": Capability(
-                bool(os.environ.get("OPENAI_API_KEY"))
+                OpenAICredentialStore().status().configured
                 and importlib.util.find_spec("openai") is not None,
-                "Set OPENAI_API_KEY and install the openai Python package in the analysis runtime.",
+                "Save an OpenAI API key securely in Settings → AI / OpenAI and install the openai package in the analysis/MCP runtime.",
             ),
             "marker_custom_data": Capability(callable_api(timeline, "GetMarkerCustomData") and callable_api(timeline, "UpdateMarkerCustomData"), "Marker custom data is unavailable."),
             "metadata": Capability(bool(pool), "Open a project to use metadata tools."),
