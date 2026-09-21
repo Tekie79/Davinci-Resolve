@@ -35,6 +35,48 @@ def build(ui):
                 ui.HGroup({"Spacing": 5, "Weight": 0}, [ui.Label({"Text": "Naming", "StyleSheet": theme.SUBTITLE}), line_edit(ui, "SettingStillTemplate", "{Timeline}_{Timecode}_{Index}")]),
                 ui.VGap(0, 1),
             ]),
+            ui.VGroup({"Spacing": 10, "StyleSheet": theme.SURFACE}, [
+                ui.Label({"Text": "AI / OPENAI", "StyleSheet": theme.SECTION, "Weight": 0}),
+                ui.Label({
+                    "Text": "The API key is stored in the operating-system credential store (macOS Keychain on macOS). It is never written to settings.json or Git.",
+                    "WordWrap": True,
+                    "StyleSheet": theme.SUBTITLE,
+                    "Weight": 0,
+                }),
+                ui.HGroup({"Spacing": 7, "Weight": 0}, [
+                    ui.Label({"Text": "Status", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
+                    ui.Label({"ID": "OpenAICredentialStatus", "Text": "Checking…", "StyleSheet": theme.SECTION, "Weight": 1}),
+                ]),
+                ui.HGroup({"Spacing": 7, "Weight": 0}, [
+                    ui.Label({"Text": "API key", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
+                    ui.LineEdit({
+                        "ID": "SettingOpenAIKey",
+                        "PlaceholderText": "Paste key to save/replace — field is cleared after save",
+                        "EchoMode": "Password",
+                        "StyleSheet": theme.FIELD,
+                        "Weight": 1,
+                    }),
+                ]),
+                ui.HGroup({"Spacing": 7, "Weight": 0}, [
+                    button(ui, "SaveOpenAIKey", "Save Securely", True),
+                    button(ui, "TestOpenAIKey", "Test Connection"),
+                    button(ui, "RemoveOpenAIKey", "Remove Key"),
+                    ui.HGap(0, 1),
+                ]),
+                ui.Label({"Text": "SPEAKER DIARIZATION", "StyleSheet": theme.SECTION, "Weight": 0}),
+                ui.HGroup({"Spacing": 7, "Weight": 0}, [
+                    ui.Label({"Text": "Model", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
+                    line_edit(ui, "SettingOpenAIModel", "gpt-4o-transcribe-diarize"),
+                ]),
+                ui.CheckBox({"ID": "SettingOpenAITranscript", "Text": "Include transcript text in speaker-marker notes (off by default for Amharic/mixed dialogue)", "Weight": 0}),
+                ui.Label({
+                    "Text": "Speaker timing and confirmed voice references are the primary signals. Transcript accuracy is not required for marker creation.",
+                    "WordWrap": True,
+                    "StyleSheet": theme.SUBTITLE,
+                    "Weight": 0,
+                }),
+                ui.VGap(0, 1),
+            ]),
         ]),
         ui.HGroup({"Spacing": 5, "Weight": 0}, [button(ui, "SaveSettings", "Save Settings", True), ui.Label({"ID": "SettingsStatus", "Text": "", "StyleSheet": theme.SUBTITLE}), ui.HGap(0, 1)]),
     ])
