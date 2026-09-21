@@ -90,7 +90,7 @@ class TimelineAudioExportTests(unittest.TestCase):
         service = TimelineAudioExportService(ResolveContextService(resolve))
 
         with tempfile.TemporaryDirectory() as folder:
-            result = service.export_select_timeline_audio(output_dir=folder)
+            result = service.export_select_timeline_audio(output_dir=folder, preferred_format="wav")
             self.assertTrue(result.success)
             self.assertTrue(Path(result.path).is_file())
             self.assertEqual(project.current, {"format": "QuickTime", "codec": "H264"})
