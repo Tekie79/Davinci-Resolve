@@ -1,4 +1,4 @@
-# Manual Resolve Acceptance — v0.3.23
+# Manual Resolve Acceptance — v0.4.0
 
 Use a disposable test project/timeline before testing mutations. Record Resolve
 version, OS, page, project, timeline, and selection source with each run.
