@@ -7,7 +7,14 @@ from .navigation import NavigationEngine
 from .preferences import Preferences, user_data_dir
 from .resolve_context import ResolveContextService
 from .selection import SelectionEngine
-from .services import HealthService, MarkerService, MetadataService, RenameService, StillService
+from .services import (
+    HealthService,
+    MarkerService,
+    MetadataService,
+    RenameService,
+    SpeakerMarkerService,
+    StillService,
+)
 from .thumbnails import ThumbnailCache
 
 
@@ -59,6 +66,7 @@ class ResolveHubApplication:
         self.thumbnails = ThumbnailCache(self.context, cache_folder, self.preferences.get("thumbnails", "enabled", True))
         self.capabilities = CapabilityDetector(resolve)
         self.markers = MarkerService(self.context, self.history)
+        self.speaker_markers = SpeakerMarkerService(self.context)
         self.metadata = MetadataService(self.history)
         self.rename = RenameService(self.history)
         self.stills = StillService(resolve, self.context, self.navigation)
@@ -78,4 +86,3 @@ def main(namespace=None):
     if not fusion or not bmd:
         raise RuntimeError("Resolve Hub needs Resolve Studio's Fusion UI Manager.")
     ResolveHubApplication(resolve, fusion, bmd).run()
-
