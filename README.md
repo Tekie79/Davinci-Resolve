@@ -1,6 +1,6 @@
 # Meher Flow Resolve Hub
 
-**Meher Flow Resolve Hub v0.4.0** is a modular DaVinci Resolve companion built
+**Meher Flow Resolve Hub v0.4.1** is a modular DaVinci Resolve companion built
 with Fusion UIManager. It centralizes marker, metadata, clip-name, still,
 media-health, and Codex-driven speaker analysis workflows.
 
@@ -10,7 +10,7 @@ The P0 interaction model is:
 
 ---
 
-## What v0.4.0 adds
+## What v0.4.x adds
 
 The speaker-dialogue workflow is designed for **Amharic, English, and mixed
 Amharic/English production audio** without depending on Resolve transcription or
@@ -216,7 +216,8 @@ repository.
 Example:
 
 ~~~bash
-codex mcp add meher-resolve   --env YSEW_VOICE_REFERENCE_DIR="$HOME/Movies/Yekermo-Sew-Voice-References"   -- "$HOME/Library/Application Support/Meher Flow/Resolve Hub/bin/run-resolve-mcp"
+codex mcp add meher-resolve -- \
+  "$HOME/Library/Application Support/Meher Flow/Resolve Hub/bin/run-resolve-mcp"
 ~~~
 
 Verify:
@@ -239,6 +240,10 @@ The exposed tools include:
 resolve_status
 list_select_timelines
 analyze_select_speakers_and_mark
+rename_clips_from_keywords
+list_reference_stills
+export_timeline_clip_visuals
+cleanup_visual_analysis_frames
 ~~~
 
 The OpenAI API key is **not** included in the MCP configuration because the
@@ -248,6 +253,89 @@ For Yekermo Sew, Codex passes the project-specific voice-reference directory
 (e.g. `<Ysew-Post-Prod-Assistant>/voice-references`) to the MCP speaker tool on
 each request. `YSEW_VOICE_REFERENCE_DIR` remains available only as an optional
 fallback/override.
+
+---
+
+# Keywords-driven clip naming
+
+Resolve Hub can rename Resolve Media Pool **clip labels** from the standard
+`Keywords` metadata field.
+
+It never renames source files on disk.
+
+Recommended Keywords:
+
+~~~text
+Name=Mike; ShotType=MCU; Frames=103245-103612
+Character=Sam; Shot=CU; FrameStart=2030; FrameEnd=2148
+Subject=Phone; ShotType=INSERT; Frames=550-612
+~~~
+
+Compact form:
+
+~~~text
+Mike, MCU, 103245-103612
+~~~
+
+Generated labels:
+
+~~~text
+Mike_MCU_T01
+Mike_MCU_T02
+Sam_CU_T01
+MikeSam_2SHOT_T01
+Phone_INSERT_T01
+~~~
+
+MCP tool:
+
+~~~text
+rename_clips_from_keywords
+~~~
+
+Supported sources:
+
+~~~text
+timeline
+timeline_selection
+current_bin
+media_pool_selection
+~~~
+
+Run with `mode=preview` first. Missing Name/Character/Subject or ShotType,
+duplicate labels, stale metadata, or invalid names block the entire apply.
+
+For timeline sources, the tool renames the shared Media Pool clip label, so all
+timeline instances referencing that media item show the updated label.
+
+## Codex visual-assisted clip review
+
+Resolve Hub also exposes project-agnostic helpers for Codex vision:
+
+~~~text
+list_reference_stills
+export_timeline_clip_visuals
+cleanup_visual_analysis_frames
+~~~
+
+`list_reference_stills` returns filenames, local paths, and metadata from a
+Media Pool bin such as:
+
+~~~text
+Master/01_MEDIA/STILLS/CODEX_REF
+~~~
+
+`export_timeline_clip_visuals` exports representative PNGs from the current
+Select timeline and returns local filesystem paths. Codex can attach/view those
+local images and analyze shot framing, composition, OTS/2SHOT/group coverage,
+inserts, wardrobe, props, location/background, and continuity.
+
+Character identity must come from explicit project metadata/editor confirmation.
+The visual helper is not a face-identification system and must not assign a real
+person's identity from facial appearance.
+
+The visual pass is advisory. The actual rename remains metadata-driven through
+`rename_clips_from_keywords`.
 
 ---
 
@@ -566,6 +654,15 @@ Live Resolve checks:
 
 - [MANUAL_RESOLVE_ACCEPTANCE.md](./MANUAL_RESOLVE_ACCEPTANCE.md)
 - [P0_IMPLEMENTATION_NOTES.md](./P0_IMPLEMENTATION_NOTES.md)
+
+Keyword rename tests cover:
+
+- Keywords parsing and aliases;
+- frame/timeline take ordering;
+- explicit Take reservation;
+- REVIEW_REQUIRED blockers;
+- non-destructive Media Pool label rename;
+- source file path preservation.
 
 Speaker-specific tests cover:
 
