@@ -19,6 +19,7 @@ from .app import get_resolve_app
 from .constants import APP_VERSION, MARKER_COLORS
 from .credential_service import OpenAICredentialStore
 from .speaker_markers import analyze_select_speakers_and_mark as run_speaker_marker_workflow
+from .utils import same_proxy
 
 
 mcp = MCPServer(
@@ -245,7 +246,7 @@ def analyze_select_speakers_and_mark(
         scene=scene,
     )
     previous = project.GetCurrentTimeline()
-    switched = previous is not target
+    switched = not same_proxy(previous, target)
 
     references, reference_warnings = _voice_references(
         characters or [], voice_reference_dir
