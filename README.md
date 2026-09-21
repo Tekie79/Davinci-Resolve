@@ -191,7 +191,7 @@ To remove it:
 Settings → AI / OpenAI → Remove Key
 ~~~
 
-## 5. Create local character voice references
+## 5. Provide character voice references
 
 For automatic character naming, prepare a clean **2–10 second** reference sample
 for each recurring character.
@@ -199,16 +199,11 @@ for each recurring character.
 MP3 is recommended for small files. WAV, M4A, FLAC, OGG, and WebM are also
 supported by the OpenAI audio endpoint.
 
-Example:
+The Resolve Hub itself is project-agnostic. The calling Codex project supplies
+the reference directory to the MCP tool. For Yekermo Sew that directory is:
 
 ~~~text
-~/Movies/Yekermo-Sew-Voice-References/
-├── Mike.mp3
-├── Sam.mp3
-├── CJ.mp3
-├── Beck.mp3
-├── Sara.mp3
-└── ...
+<Ysew-Post-Prod-Assistant>/voice-references/
 ~~~
 
 Reference rules:
@@ -274,6 +269,11 @@ analyze_select_speakers_and_mark
 
 The OpenAI API key is **not** included in the MCP configuration because the
 installed Resolve Hub retrieves it from macOS Keychain.
+
+For Yekermo Sew, Codex passes the project-specific voice-reference directory
+(e.g. `<Ysew-Post-Prod-Assistant>/voice-references`) to the MCP speaker tool on
+each request. `YSEW_VOICE_REFERENCE_DIR` remains available only as an optional
+fallback/override.
 
 ---
 
