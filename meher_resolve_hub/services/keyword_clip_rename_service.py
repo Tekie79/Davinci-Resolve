@@ -130,6 +130,14 @@ def _parse_int(value) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+def _first_int(*values) -> Optional[int]:
+    for value in values:
+        parsed = _parse_int(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def parse_keywords(value) -> ParsedKeywords:
     raw = str(value or "").strip()
     found: Dict[str, str] = {}
@@ -153,14 +161,8 @@ def parse_keywords(value) -> ParsedKeywords:
         or ""
     )
 
-    frame_start = (
-        _parse_int(found.get("framestart"))
-        or _parse_int(found.get("startframe"))
-    )
-    frame_end = (
-        _parse_int(found.get("frameend"))
-        or _parse_int(found.get("endframe"))
-    )
+    frame_start = _first_int(found.get("framestart"), found.get("startframe"))
+    frame_end = _first_int(found.get("frameend"), found.get("endframe"))
 
     range_value = (
         found.get("frames")
