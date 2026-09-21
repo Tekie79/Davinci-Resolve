@@ -299,9 +299,12 @@ class SpeakerMarkerService:
             ))
 
         min_frames = max(1, int(round(float(minimum_duration_ms) * fps / 1000.0)))
-        mapped = [value for value in mapped if value.duration >= min_frames]
         gap_frames = max(0, int(round(float(merge_gap_ms) * fps / 1000.0)))
+        # Merge short same-speaker fragments before the minimum-duration filter.
+        # Diarization can split one natural line into sub-300 ms pieces; dropping
+        # those pieces first would create false holes in the speaker range.
         merged = self._merge(mapped, gap_frames)
+        merged = [value for value in merged if value.duration >= min_frames]
 
         items, track_index = self._video_items(timeline, primary_video_track)
         if not items:
