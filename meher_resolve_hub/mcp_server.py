@@ -18,7 +18,7 @@ from mcp.server import MCPServer
 from .app import get_resolve_app
 from .constants import APP_VERSION, MARKER_COLORS
 from .credential_service import OpenAICredentialStore
-from .speaker_markers import analyze_select_speakers_and_mark
+from .speaker_markers import analyze_select_speakers_and_mark as run_speaker_marker_workflow
 
 
 mcp = MCPServer(
@@ -210,7 +210,7 @@ def list_select_timelines() -> List[str]:
 
 
 @mcp.tool()
-def analyze_select_speakers_and_mark_tool(
+def analyze_select_speakers_and_mark(
     episode: Optional[int] = None,
     scene: Optional[str] = None,
     timeline_name: Optional[str] = None,
@@ -257,7 +257,7 @@ def analyze_select_speakers_and_mark_tool(
             if not changed:
                 raise RuntimeError("Resolve could not activate the target Select timeline.")
 
-        result = analyze_select_speakers_and_mark(
+        result = run_speaker_marker_workflow(
             resolve,
             timeline=target,
             known_speaker_references=references,
