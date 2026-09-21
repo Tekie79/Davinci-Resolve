@@ -10,6 +10,8 @@ arguments; OpenAI credentials are resolved from the OS credential store.
 
 import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -18,8 +20,14 @@ from mcp.server import MCPServer
 from .app import get_resolve_app
 from .constants import APP_VERSION, MARKER_COLORS
 from .credential_service import OpenAICredentialStore
+from .resolve_context import ResolveContextService
+from .selection import SelectionEngine, SelectionUnavailable
+from .services.keyword_clip_rename_service import KeywordClipRenameService
+from .services.metadata_service import MetadataService
+from .services.rename_service import RenameService
+from .services.still_service import StillService
 from .speaker_markers import analyze_select_speakers_and_mark as run_speaker_marker_workflow
-from .utils import same_proxy
+from .utils import proxy_id, same_proxy
 
 
 mcp = MCPServer(
@@ -170,6 +178,157 @@ def _voice_references(characters, reference_dir=None):
     return references, warnings
 
 
+def _find_bin_by_path(media_pool, bin_path):
+    root = media_pool.GetRootFolder() if media_pool else None
+    if not root:
+        raise RuntimeError("Resolve Media Pool is unavailable.")
+
+    parts = [part for part in str(bin_path or "").replace("\\", "/").split("/") if part]
+    if not parts:
+        return root
+
+    try:
+        root_name = str(root.GetName() or "")
+    except Exception:
+        root_name = ""
+    if parts and parts[0].casefold() == root_name.casefold():
+        parts = parts[1:]
+
+    current = root
+    for part in parts:
+        try:
+            children = list(current.GetSubFolderList() or [])
+        except Exception:
+            children = []
+        matches = []
+        for child in children:
+            try:
+                name = str(child.GetName() or "")
+            except Exception:
+                name = ""
+            if name.casefold() == part.casefold():
+                matches.append(child)
+        if len(matches) != 1:
+            raise RuntimeError(
+                "Media Pool bin path could not be resolved at %s in %s."
+                % (part, bin_path)
+            )
+        current = matches[0]
+    return current
+
+
+def _video_timeline_items(timeline, selected_only=False):
+    if not timeline:
+        return []
+    if selected_only:
+        try:
+            selected = list(timeline.GetSelectedClips() or [])
+        except Exception:
+            selected = []
+        result = []
+        for item in selected:
+            try:
+                if item.GetMediaPoolItem():
+                    result.append(item)
+            except Exception:
+                continue
+        return result
+
+    result = []
+    try:
+        track_count = int(timeline.GetTrackCount("video") or 0)
+    except Exception:
+        track_count = 0
+    for track_index in range(1, track_count + 1):
+        try:
+            result.extend(list(timeline.GetItemListInTrack("video", track_index) or []))
+        except Exception:
+            continue
+    return result
+
+
+def _unique_media_items(items):
+    clips, seen = [], set()
+    for item in items:
+        try:
+            clip = item.GetMediaPoolItem()
+        except Exception:
+            clip = None
+        if not clip:
+            continue
+        identity = proxy_id(clip)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        clips.append(clip)
+    return clips
+
+
+def _timeline_order_hints(items):
+    result = {}
+    for item in items:
+        try:
+            clip = item.GetMediaPoolItem()
+            identity = proxy_id(clip)
+            start = int(item.GetStart())
+        except Exception:
+            continue
+        if identity not in result or start < result[identity]:
+            result[identity] = start
+    return result
+
+
+def _keyword_rename_source(resolve, source, recursive=False):
+    context_service = ResolveContextService(resolve)
+    context = context_service.refresh_context()
+    if not context.project:
+        raise RuntimeError("Open a Resolve project first.")
+
+    source_key = str(source or "timeline").strip().casefold().replace("-", "_")
+    selection_engine = SelectionEngine(context_service)
+
+    if source_key in ("timeline", "current_timeline"):
+        items = _video_timeline_items(context.timeline, selected_only=False)
+        return _unique_media_items(items), items, "Current Timeline"
+    if source_key in ("timeline_selection", "selected_timeline", "selection"):
+        items = _video_timeline_items(context.timeline, selected_only=True)
+        return _unique_media_items(items), items, "Timeline Selection"
+    if source_key in ("bin", "media_bin", "current_bin"):
+        selection = selection_engine.get_current_bin_items(bool(recursive))
+        return selection.clips, [], selection.mode
+    if source_key in ("media_pool_selection", "media_selection"):
+        selection = selection_engine.get_media_pool_selection()
+        return selection.clips, [], selection.mode
+    raise RuntimeError(
+        "source must be timeline, timeline_selection, current_bin, or media_pool_selection."
+    )
+
+
+def _preview_dict(preview):
+    rows = []
+    for change in preview.changes:
+        context = dict(change.context or {})
+        rows.append({
+            "current_name": str(change.before),
+            "proposed_name": str(change.after),
+            "status": str(change.status),
+            "keywords": context.get("keywords", ""),
+            "subject": context.get("subject", ""),
+            "shot_type": context.get("shot_type", ""),
+            "frame_start": context.get("frame_start"),
+            "frame_end": context.get("frame_end"),
+            "take": context.get("take"),
+            "explicit_take": context.get("explicit_take"),
+            "missing": list(context.get("missing", []) or []),
+        })
+    return {
+        "changed": int(preview.changed),
+        "unchanged": int(preview.unchanged),
+        "conflicts": int(preview.conflicts),
+        "rows": rows,
+    }
+
+
 def _result_dict(result):
     return {
         "success": bool(result.success),
@@ -279,6 +438,203 @@ async def analyze_select_speakers_and_mark(
                 project.SetCurrentTimeline(previous)
             except Exception:
                 pass
+
+
+
+@mcp.tool()
+async def rename_clips_from_keywords(
+    source: str = "timeline",
+    mode: str = "preview",
+    keyword_field: str = "Keywords",
+    recursive: bool = False,
+    take_width: int = 2,
+) -> Dict[str, object]:
+    """Preview/apply Character_ShotType_T## labels from Resolve Keywords metadata.
+
+    source:
+      timeline             all video clips in the current timeline
+      timeline_selection   selected timeline video clips
+      current_bin          clips in the current Media Pool bin
+      media_pool_selection selected Media Pool clips
+
+    This changes Resolve Media Pool clip labels only. It never renames source
+    files on disk. Timeline instances that reference the same Media Pool clip
+    will display the updated shared clip label.
+    """
+    if mode not in ("preview", "apply"):
+        raise RuntimeError("mode must be preview or apply.")
+
+    resolve = _resolve()
+    clips, timeline_items, resolved_source = _keyword_rename_source(
+        resolve, source, recursive=recursive
+    )
+    if not clips:
+        raise RuntimeError("No clips were found for the requested source.")
+
+    metadata = MetadataService()
+    records = metadata.build_records(clips, timeline_items)
+    rename = RenameService()
+    service = KeywordClipRenameService(rename)
+    preview = service.preview(
+        records,
+        keyword_field=keyword_field,
+        take_width=max(1, int(take_width)),
+        order_hints=_timeline_order_hints(timeline_items),
+    )
+
+    output = {
+        "source": resolved_source,
+        "mode": mode,
+        "keyword_field": keyword_field,
+        "naming_standard": "Character_ShotType_T##",
+        "preview": _preview_dict(preview),
+        "source_files_renamed": False,
+    }
+    if mode == "preview":
+        return output
+
+    result = service.apply_preview(preview)
+    output["result"] = _result_dict(result)
+    return output
+
+
+@mcp.tool()
+async def list_reference_stills(
+    bin_path: str = "Master/01_MEDIA/STILLS/CODEX_REF",
+) -> Dict[str, object]:
+    """Return local reference-still paths and metadata from a Media Pool bin."""
+    resolve = _resolve()
+    project = _project(resolve)
+    media_pool = project.GetMediaPool()
+    folder = _find_bin_by_path(media_pool, bin_path)
+    try:
+        clips = list(folder.GetClipList() or [])
+    except Exception:
+        clips = []
+
+    assets = []
+    for clip in clips:
+        try:
+            name = str(clip.GetName() or "")
+        except Exception:
+            name = ""
+        try:
+            metadata = dict(clip.GetMetadata() or {})
+        except Exception:
+            metadata = {}
+        try:
+            properties = dict(clip.GetClipProperty() or {})
+        except Exception:
+            properties = {}
+        path = str(properties.get("File Path") or properties.get("File Name") or "")
+        assets.append({
+            "name": name,
+            "path": path,
+            "keywords": str(metadata.get("Keywords", "") or ""),
+            "metadata": metadata,
+        })
+
+    return {
+        "bin_path": bin_path,
+        "count": len(assets),
+        "assets": assets,
+        "note": (
+            "Reference filenames/metadata may provide project context. Do not use "
+            "face matching to identify a real person; character identity must come "
+            "from explicit project metadata or editor confirmation."
+        ),
+    }
+
+
+@mcp.tool()
+async def export_timeline_clip_visuals(
+    selected_only: bool = False,
+    position: str = "middle",
+    max_clips: int = 100,
+) -> Dict[str, object]:
+    """Export representative PNGs for current-timeline video clips for Codex vision."""
+    resolve = _resolve()
+    context_service = ResolveContextService(resolve)
+    context = context_service.refresh_context()
+    if not context.project or not context.timeline:
+        raise RuntimeError("Open the target Resolve timeline first.")
+    if "SELECT" not in str(context.timeline_name or "").upper():
+        raise RuntimeError(
+            "Visual clip analysis defaults to a Select timeline. Open the Select timeline first."
+        )
+
+    normalized_position = str(position or "middle").strip().title()
+    if normalized_position not in ("First", "Middle", "Last"):
+        raise RuntimeError("position must be first, middle, or last.")
+
+    items = _video_timeline_items(context.timeline, selected_only=bool(selected_only))
+    limit = max(1, min(int(max_clips), 500))
+    items = items[:limit]
+    if not items:
+        raise RuntimeError("No video clips were found to export.")
+
+    service = StillService(resolve, context_service)
+    fps = context_service.get_project_fps()
+    queue = service.queue_from_timeline_items(
+        items,
+        normalized_position,
+        "CodexVisual_{Index}_{Clip}",
+        fps,
+        context.project_name,
+        context.timeline_name,
+        context.timeline,
+    )
+    folder = Path(tempfile.mkdtemp(prefix="meher-visual-frames-"))
+    result = service.execute_queue(queue, folder, import_to_bin=False)
+
+    rows = []
+    for item, job in zip(items, queue):
+        try:
+            clip = item.GetMediaPoolItem()
+            clip_name = str(clip.GetName() or item.GetName() or "")
+            metadata = dict(clip.GetMetadata() or {})
+            media_id = proxy_id(clip)
+            start = int(item.GetStart())
+            end = int(item.GetEnd())
+        except Exception:
+            clip_name, metadata, media_id, start, end = "", {}, "", None, None
+        rows.append({
+            "timeline_item_id": proxy_id(item),
+            "media_pool_id": media_id,
+            "clip_name": clip_name,
+            "timeline_start": start,
+            "timeline_end": end,
+            "keywords": str(metadata.get("Keywords", "") or ""),
+            "image_path": str(job.output_path or ""),
+            "status": str(job.status),
+        })
+
+    return {
+        "timeline": context.timeline_name,
+        "selected_only": bool(selected_only),
+        "position": normalized_position.lower(),
+        "temporary_directory": str(folder),
+        "capture": _result_dict(result),
+        "clips": rows,
+        "instruction": (
+            "Use Codex image viewing on image_path values for shot type, composition, "
+            "wardrobe, props, and location analysis. Do not identify a real person "
+            "from facial appearance; use Keywords/editor metadata for character names."
+        ),
+    }
+
+
+@mcp.tool()
+async def cleanup_visual_analysis_frames(directory: str) -> Dict[str, object]:
+    """Delete only a temporary directory created by export_timeline_clip_visuals."""
+    path = Path(str(directory or "")).expanduser().resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    if path.parent != temp_root or not path.name.startswith("meher-visual-frames-"):
+        raise RuntimeError("Refusing to delete a directory not created by visual analysis.")
+    existed = path.exists()
+    if existed:
+        shutil.rmtree(str(path))
+    return {"removed": bool(existed), "directory": str(path)}
 
 
 if __name__ == "__main__":
