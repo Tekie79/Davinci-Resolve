@@ -30,6 +30,12 @@
 - OpenAI file transcription accepts bounded file uploads. Oversized WAV analysis is split into overlapping chunks; only the owned midpoint region of each chunk is retained to avoid duplicate overlap segments.
 - Known speaker references are optional and limited to four per diarization request. Unmatched speakers remain UNKNOWN instead of being inferred from unreliable text.
 
+- On macOS the OpenAI API key is stored with native Security.framework Keychain APIs. It is never written to settings.json, MCP arguments, marker data, or Git. OPENAI_API_KEY remains a compatibility fallback only.
+- The Resolve Settings UI clears the key input immediately after save and shows only masked credential status.
+- The local MCP server is launched from the installed runtime. Production Codex use does not require reading the development repository.
+- Speaker-analysis audio is rendered safely as WAV first. If ffmpeg is available, the temporary upload copy is converted to mono MP3 (64 kbps default) to reduce file size; WAV remains the fallback.
+- The MCP speaker tool accepts 1-4 scene character names and resolves only those local reference files. The API key is intentionally not an MCP parameter.
+
 ## Safety decisions
 
 - P0 renames Resolve clip names only. Camera-original files remain untouched.
