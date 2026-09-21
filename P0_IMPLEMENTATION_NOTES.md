@@ -23,9 +23,12 @@
   target proxy is no longer loaded or its current value no longer matches the
   value Resolve Hub applied.
 
-- Resolve 21 can detect/transcribe speakers in the UI, but the documented scripting API does not expose the speaker-detection segment list as a stable callable interface. Speaker marker automation therefore separates analysis from application: the service accepts timed segments directly or an injected analyzer adapter.
+- Resolve 21 can detect/transcribe speakers in the UI, but the documented scripting API does not expose the speaker-detection segment list as a stable callable interface. The production speaker-marker path therefore exports the Select timeline audio and uses OpenAI `gpt-4o-transcribe-diarize`; precomputed segments and injected analyzers remain supported for tests/alternate backends.
 - TimelineItem marker APIs use clip-relative marker offsets. Speaker turns are kept in absolute timeline frames for analysis, split at TimelineItem boundaries, then converted to clip-relative offsets before AddMarker.
 - Resolve supports a fixed named marker palette. Orange is not in the supported marker color set used by Resolve Hub; project mappings must use supported names such as Yellow, Sand, or Cocoa.
+- Transcript text is deliberately optional for speaker markers. Mixed Amharic/English projects use diarization timing and confirmed voice references rather than treating transcript wording as identity proof.
+- OpenAI file transcription accepts bounded file uploads. Oversized WAV analysis is split into overlapping chunks; only the owned midpoint region of each chunk is retained to avoid duplicate overlap segments.
+- Known speaker references are optional and limited to four per diarization request. Unmatched speakers remain UNKNOWN instead of being inferred from unreliable text.
 
 ## Safety decisions
 
