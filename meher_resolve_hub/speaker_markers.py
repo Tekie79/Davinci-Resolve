@@ -25,6 +25,58 @@ def _cleanup_temporary_export(export_result):
         pass
 
 
+def export_select_timeline_audio(resolve, timeline=None, **kwargs):
+    """Export the actual Select-timeline mix as a temporary WAV for Codex."""
+    context = ResolveContextService(resolve)
+    return TimelineAudioExportService(context).export_select_timeline_audio(
+        timeline=timeline, **kwargs
+    )
+
+
+def analyze_audio_with_openai(
+    audio_path,
+    known_speaker_references=None,
+    openai_api_key=None,
+    openai_model="gpt-4o-transcribe-diarize",
+    include_transcript=False,
+):
+    """Analyze an audio file outside Resolve and return timed speaker segments."""
+    analyzer = OpenAIDiarizationAnalyzer(
+        audio_path=audio_path,
+        api_key=openai_api_key,
+        known_speaker_references=known_speaker_references,
+        model=openai_model,
+        include_transcript=include_transcript,
+    )
+    segments = analyzer.analyze(None, 24.0)
+    return {
+        "segments": segments,
+        "warnings": list(analyzer.last_warnings),
+        "model": openai_model,
+    }
+
+
+def apply_select_speaker_markers(
+    resolve,
+    segments,
+    timeline=None,
+    speaker_map=None,
+    speaker_colors=None,
+    mode="apply",
+    **kwargs
+):
+    """Apply already-analyzed speaker ranges to Resolve clip markers."""
+    context = ResolveContextService(resolve)
+    return SpeakerMarkerService(context).analyze_select_speakers_and_mark(
+        segments=segments,
+        timeline=timeline,
+        speaker_map=speaker_map,
+        speaker_colors=speaker_colors,
+        mode=mode,
+        **kwargs
+    )
+
+
 def analyze_select_speakers_and_mark(
     resolve,
     segments=None,
