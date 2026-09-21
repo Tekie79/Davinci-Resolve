@@ -10,10 +10,10 @@ analysis and an OPENAI_API_KEY (or explicit api_key).
 
 from base64 import b64encode
 from pathlib import Path
-import math
-import os
 import tempfile
 import wave
+
+from ..credential_service import resolve_openai_api_key
 
 
 MAX_UPLOAD_BYTES = 24 * 1024 * 1024
@@ -59,7 +59,7 @@ class OpenAIDiarizationAnalyzer:
         chunk_overlap_seconds=0.75,
     ):
         self.audio_path = Path(audio_path)
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self.api_key = resolve_openai_api_key(api_key)
         self.known_speaker_references = dict(known_speaker_references or {})
         self.model = str(model)
         self.include_transcript = bool(include_transcript)
@@ -70,8 +70,8 @@ class OpenAIDiarizationAnalyzer:
     def _client(self):
         if not self.api_key:
             raise OpenAIDiarizationError(
-                "OPENAI_API_KEY is not set. Codex speaker analysis uses the OpenAI "
-                "audio transcription/diarization API, not Resolve transcription."
+                "No OpenAI API key is available. Save one securely in Resolve Hub "
+                "Settings → AI / OpenAI, or set OPENAI_API_KEY in the runtime environment."
             )
         try:
             from openai import OpenAI
