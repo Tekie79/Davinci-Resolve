@@ -139,3 +139,27 @@ version, OS, page, project, timeline, and selection source with each run.
   show exact actionable errors.
 - [ ] Confirm no lost marker after failed mutation, no playhead drift after
   thumbnails/batch stills, and no current-bin drift after still import.
+
+
+## Keywords clip naming
+
+- [ ] On a disposable clip, set Keywords to `Name=Mike; ShotType=MCU; Frames=100-200`.
+- [ ] Call `rename_clips_from_keywords(source="timeline", mode="preview")` and confirm `Mike_MCU_T01` is proposed.
+- [ ] Confirm source file path/name on disk is unchanged.
+- [ ] Add a second Mike MCU with later Frames and confirm `T02`.
+- [ ] Remove ShotType from one clip and confirm the whole apply is blocked as REVIEW_REQUIRED.
+- [ ] Test `timeline_selection`, `current_bin`, and `media_pool_selection`.
+- [ ] Change Keywords after preview and confirm stale apply is rejected.
+- [ ] Verify a repeated Media Pool clip used multiple times in the timeline is renamed once at the shared clip-label level.
+
+## Codex visual-assisted clip review
+
+- [ ] Populate `Master/01_MEDIA/STILLS/CODEX_REF` with test reference stills.
+- [ ] Call `list_reference_stills` and verify local paths/metadata are returned.
+- [ ] Call `export_timeline_clip_visuals` on a disposable Select timeline.
+- [ ] Confirm representative PNGs match the intended timeline clips.
+- [ ] Confirm previous playhead position is restored after export.
+- [ ] Inspect returned PNGs with Codex image input and verify shot-size/OTS/2SHOT/INSERT analysis.
+- [ ] Do not infer character identity from a face; use Keywords/editor confirmation.
+- [ ] Confirm shot-type disagreements are reported for review before rename.
+- [ ] Call `cleanup_visual_analysis_frames` and verify only the owned temporary directory is deleted.
