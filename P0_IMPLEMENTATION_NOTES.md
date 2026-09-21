@@ -23,6 +23,10 @@
   target proxy is no longer loaded or its current value no longer matches the
   value Resolve Hub applied.
 
+- Resolve 21 can detect/transcribe speakers in the UI, but the documented scripting API does not expose the speaker-detection segment list as a stable callable interface. Speaker marker automation therefore separates analysis from application: the service accepts timed segments directly or an injected analyzer adapter.
+- TimelineItem marker APIs use clip-relative marker offsets. Speaker turns are kept in absolute timeline frames for analysis, split at TimelineItem boundaries, then converted to clip-relative offsets before AddMarker.
+- Resolve supports a fixed named marker palette. Orange is not in the supported marker color set used by Resolve Hub; project mappings must use supported names such as Yellow, Sand, or Cocoa.
+
 ## Safety decisions
 
 - P0 renames Resolve clip names only. Camera-original files remain untouched.
@@ -33,6 +37,8 @@
   doing so would break the Media Pool reference.
 - Every unsupported selection mode remains explicit and disabled/unavailable;
   the application does not substitute another source.
+- Speaker-marker reruns remove/replace only markers carrying Resolve Hub speaker-dialogue customData. Manual markers and unrelated generated markers are preserved.
+- Speaker-marker batch writes are read back. On failure, the service restores the previous generated speaker-marker snapshot; it never shifts a manual marker to hide a same-frame collision.
 
 ## Compatibility retained from v0.2.2
 
