@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+
+# Local/private runtime data
+local-config.local.yaml
+voice-references/
+speaker-analysis-temp/
+
+# macOS
+.DS_Store
+
+# Test/cache
+.pytest_cache/
+.coverage
+htmlcov/

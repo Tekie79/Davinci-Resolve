@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DaVinci Resolve menu entry for Meher Flow Resolve Hub v0.3.22."""
+"""DaVinci Resolve menu entry for Meher Flow Resolve Hub v0.4.0."""
 
 import sys
 import os

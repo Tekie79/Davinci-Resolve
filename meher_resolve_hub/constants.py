@@ -2,7 +2,7 @@
 
 APP_NAME = "Meher Flow Resolve Hub"
 SHORT_NAME = "Resolve Hub"
-APP_VERSION = "0.3.22"
+APP_VERSION = "0.4.0"
 APP_SUBTITLE = "Advanced media, marker, and review tools for DaVinci Resolve"
 MAIN_WINDOW_ID = "com.meher-flow.resolve-hub.v0322"
 PREVIEW_WINDOW_ID = MAIN_WINDOW_ID + ".preview"
