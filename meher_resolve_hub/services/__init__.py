@@ -1,6 +1,7 @@
 """Resolve-facing workspace services."""
 
 from .health_service import HealthService
+from .keyword_clip_rename_service import KeywordClipRenameService, ParsedKeywords, parse_keywords
 from .marker_service import MarkerService
 from .metadata_service import MetadataService
 from .openai_diarization_service import OpenAIDiarizationAnalyzer
@@ -11,6 +12,9 @@ from .timeline_audio_export_service import TimelineAudioExportService
 
 __all__ = [
     "HealthService",
+    "KeywordClipRenameService",
+    "ParsedKeywords",
+    "parse_keywords",
     "MarkerService",
     "MetadataService",
     "OpenAIDiarizationAnalyzer",
