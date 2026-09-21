@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .. import theme
 from ..constants import APP_NAME, APP_SUBTITLE, APP_VERSION, COLOR_PICKER_WINDOW_ID, MAIN_WINDOW_ID, MARKER_COLORS, PREVIEW_WINDOW_ID, SELECTION_MODES, STILL_WINDOW_ID, WORKSPACES
+from ..credential_service import credential_store_label, test_openai_connection
 from ..marker_colors import hex_color_rgba, marker_color_dot_style, marker_color_rgba
 from ..models.operation import Change, OperationResult, PreviewSummary
 from ..preferences import user_data_dir, valid_window_geometry
@@ -302,7 +303,7 @@ class ResolveHubShell:
         preview_tree = self.preview_window.GetItems()["PreviewTree"]
         preview_tree.HeaderHidden = False
         preview_tree.SetHeaderLabels(["Object", "Field", "Before", "After", "Status"])
-        for identity, labels in (("MarkerEditorTabs", ("Details", "Range", "Batch")), ("SettingsTabs", ("General", "Marker Presets", "Metadata & Stills"))):
+        for identity, labels in (("MarkerEditorTabs", ("Details", "Range", "Batch")), ("SettingsTabs", ("General", "Marker Presets", "Metadata & Stills", "AI / OpenAI"))):
             tab = items[identity]
             if tab.Count() == 0:
                 for label in labels: tab.AddTab(label)
@@ -318,6 +319,10 @@ class ResolveHubShell:
         items["SettingRequiredMetadata"].Text = ", ".join(prefs.get("metadata", "required_fields", ["Scene", "Take"]))
         items["SettingStillFolder"].Text = prefs.get("stills", "default_output_folder", "")
         items["SettingStillTemplate"].Text = prefs.get("stills", "naming_template", "{Timeline}_{Timecode}_{Index}")
+        items["SettingOpenAIModel"].Text = prefs.get("openai", "model", "gpt-4o-transcribe-diarize")
+        items["SettingOpenAITranscript"].Checked = prefs.get("openai", "include_transcript", False)
+        items["SettingOpenAIKey"].Text = ""
+        self._refresh_openai_credential_status()
 
     def _bind(self, identity, event, handler, window=None):
         (window or self.window).On[identity].__setattr__(event, handler)
@@ -437,6 +442,9 @@ class ResolveHubShell:
         self.window.On["GoToHealth"].Clicked = self._go_to_health
         self.window.On["IgnoreHealth"].Clicked = self._ignore_health
         self.window.On["SaveSettings"].Clicked = self._save_settings
+        self.window.On["SaveOpenAIKey"].Clicked = self._save_openai_key
+        self.window.On["TestOpenAIKey"].Clicked = self._test_openai_key
+        self.window.On["RemoveOpenAIKey"].Clicked = self._remove_openai_key
         self.window.On["ClearThumbnailCache"].Clicked = self._clear_thumbnail_cache
         self.window.On["BrowseCacheFolder"].Clicked = self._browse_cache_folder
         self.window.On["PresetTree"].ItemClicked = self._preset_selected
@@ -1854,11 +1862,73 @@ class ResolveHubShell:
         prefs.data["markers"]["default_duration"] = marker_duration
         prefs.data["metadata"]["required_fields"] = [value.strip() for value in str(items["SettingRequiredMetadata"].Text).split(",") if value.strip()]
         prefs.data["stills"].update({"default_output_folder": str(items["SettingStillFolder"].Text), "naming_template": str(items["SettingStillTemplate"].Text)})
+        prefs.data.setdefault("openai", {}).update({
+            "model": str(items["SettingOpenAIModel"].Text or "gpt-4o-transcribe-diarize").strip() or "gpt-4o-transcribe-diarize",
+            "include_transcript": bool(items["SettingOpenAITranscript"].Checked),
+            "analysis_audio_format": prefs.get("openai", "analysis_audio_format", "mp3"),
+            "mp3_bitrate_kbps": prefs.get("openai", "mp3_bitrate_kbps", 64),
+            "credential_store": "os_keyring",
+        })
         prefs.save()
         self.app.thumbnails.enabled = prefs.data["thumbnails"]["enabled"]
         cache_folder = str(prefs.data["thumbnails"]["cache_folder"] or "").strip()
         self.app.thumbnails.folder = Path(cache_folder) if cache_folder else user_data_dir() / ".cache" / "thumbnails"
         items["SettingsStatus"].Text = "Saved"; self._set_status("Settings saved")
+
+    def _refresh_openai_credential_status(self):
+        items = self.window.GetItems()
+        status = self.app.credentials.status()
+        if status.configured:
+            if status.backend == "environment":
+                text = "Configured from OPENAI_API_KEY · %s" % (status.masked or "hidden")
+            else:
+                text = "Configured securely in %s · %s" % (
+                    credential_store_label(), status.masked or "hidden"
+                )
+        elif status.available:
+            text = "Not configured · %s ready" % credential_store_label()
+        else:
+            text = "Secure store unavailable · install Python keyring"
+        items["OpenAICredentialStatus"].Text = text
+        return status
+
+    def _save_openai_key(self, event=None):
+        items = self.window.GetItems()
+        secret = str(items["SettingOpenAIKey"].Text or "").strip()
+        if not secret:
+            self._set_status("Paste an OpenAI API key before saving.", True)
+            return
+        try:
+            self.app.credentials.set_key(secret)
+            items["SettingOpenAIKey"].Text = ""
+            self._refresh_openai_credential_status()
+            self._set_status("OpenAI API key saved securely in %s." % credential_store_label())
+        except Exception as exc:
+            items["SettingOpenAIKey"].Text = ""
+            self._refresh_openai_credential_status()
+            self._set_status(str(exc), True)
+
+    def _test_openai_key(self, event=None):
+        items = self.window.GetItems()
+        model = str(items["SettingOpenAIModel"].Text or "gpt-4o-transcribe-diarize").strip()
+        self._set_status("Testing OpenAI connection…")
+        ok, message = test_openai_connection(
+            credential_store=self.app.credentials,
+            model=model or "gpt-4o-transcribe-diarize",
+        )
+        self._refresh_openai_credential_status()
+        self._set_status(message, not ok)
+
+    def _remove_openai_key(self, event=None):
+        items = self.window.GetItems()
+        try:
+            self.app.credentials.delete_key()
+            items["SettingOpenAIKey"].Text = ""
+            self._refresh_openai_credential_status()
+            self._set_status("Stored OpenAI API key removed.")
+        except Exception as exc:
+            self._refresh_openai_credential_status()
+            self._set_status(str(exc), True)
 
     def _browse_cache_folder(self, event=None):
         selected = self.app.fusion.RequestDir(str(self.window.GetItems()["SettingCacheFolder"].Text))
