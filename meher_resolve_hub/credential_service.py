@@ -24,6 +24,7 @@ import platform
 
 SERVICE_NAME = "Meher Flow Resolve Hub"
 OPENAI_ACCOUNT = "openai-api-key"
+ELEVENLABS_ACCOUNT = "elevenlabs-api-key"
 
 _ERR_SEC_SUCCESS = 0
 _ERR_SEC_DUPLICATE_ITEM = -25299
@@ -207,9 +208,17 @@ class _PythonKeyringBackend:
 class OpenAICredentialStore:
     """Secure OpenAI API-key storage backed by the operating system."""
 
-    def __init__(self, service_name=SERVICE_NAME, account=OPENAI_ACCOUNT):
+    def __init__(
+        self,
+        service_name=SERVICE_NAME,
+        account=OPENAI_ACCOUNT,
+        provider_name="OpenAI",
+        environment_variable="OPENAI_API_KEY",
+    ):
         self.service_name = str(service_name)
         self.account = str(account)
+        self.provider_name = str(provider_name)
+        self.environment_variable = str(environment_variable)
         self._backend = None
         self._backend_name = ""
         self._backend_error = ""
@@ -245,7 +254,7 @@ class OpenAICredentialStore:
     def set_key(self, value):
         secret = str(value or "").strip()
         if not secret:
-            raise ValueError("OpenAI API key cannot be empty.")
+            raise ValueError("%s API key cannot be empty." % getattr(self, "provider_name", "OpenAI"))
         if self._backend is None:
             raise RuntimeError(
                 "Secure credential storage is unavailable: %s"
@@ -268,7 +277,8 @@ class OpenAICredentialStore:
         return self.status()
 
     def status(self):
-        env = str(os.environ.get("OPENAI_API_KEY", "") or "")
+        env_name = getattr(self, "environment_variable", "OPENAI_API_KEY")
+        env = str(os.environ.get(env_name, "") or "")
         value = self.get_key()
         if self._backend is None:
             return CredentialStatus(
@@ -277,7 +287,7 @@ class OpenAICredentialStore:
                 backend="environment" if env else "",
                 masked=_mask(env),
                 reason=(
-                    "OPENAI_API_KEY is available from the environment."
+                    "%s is available from the environment." % env_name
                     if env else
                     "No secure OS credential backend is available."
                 ),
@@ -288,6 +298,18 @@ class OpenAICredentialStore:
             backend=self._backend_name if value else ("environment" if env else self._backend_name),
             masked=_mask(value or env),
             reason="",
+        )
+
+
+class ElevenLabsCredentialStore(OpenAICredentialStore):
+    """Secure ElevenLabs API-key storage backed by the operating system."""
+
+    def __init__(self, service_name=SERVICE_NAME, account=ELEVENLABS_ACCOUNT):
+        super().__init__(
+            service_name=service_name,
+            account=account,
+            provider_name="ElevenLabs",
+            environment_variable="ELEVENLABS_API_KEY",
         )
 
 
@@ -303,6 +325,51 @@ def resolve_openai_api_key(explicit_key=None, credential_store=None):
         return secure_value
 
     return str(os.environ.get("OPENAI_API_KEY", "") or "").strip()
+
+
+def resolve_elevenlabs_api_key(explicit_key=None, credential_store=None):
+    """Resolve ElevenLabs key without persisting or logging it elsewhere."""
+    explicit = str(explicit_key or "").strip()
+    if explicit:
+        return explicit
+
+    store = credential_store or ElevenLabsCredentialStore()
+    secure_value = store.get_key()
+    if secure_value:
+        return secure_value
+
+    return str(os.environ.get("ELEVENLABS_API_KEY", "") or "").strip()
+
+
+def test_elevenlabs_connection(explicit_key=None, credential_store=None):
+    """Verify ElevenLabs authentication using the user endpoint."""
+    key = resolve_elevenlabs_api_key(explicit_key, credential_store)
+    if not key:
+        return False, "No ElevenLabs API key is configured."
+
+    try:
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError
+        request = Request(
+            "https://api.elevenlabs.io/v1/user",
+            headers={
+                "xi-api-key": key,
+                "User-Agent": "Meher-Flow-Resolve-Hub",
+            },
+            method="GET",
+        )
+        with urlopen(request, timeout=20) as response:
+            status = int(getattr(response, "status", 200) or 200)
+        if 200 <= status < 300:
+            return True, "ElevenLabs connection verified."
+        return False, "ElevenLabs connection test returned HTTP %s." % status
+    except HTTPError as exc:
+        return False, "ElevenLabs connection test returned HTTP %s." % exc.code
+    except Exception as exc:
+        text = str(exc or "ElevenLabs connection test failed.")
+        if key and key in text:
+            text = text.replace(key, "[REDACTED]")
+        return False, "ElevenLabs connection test failed: %s" % text
 
 
 def credential_store_label():
