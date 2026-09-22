@@ -67,18 +67,11 @@ def build(ui):
                     button(ui, "RemoveOpenAIKey", "Remove Key"),
                     ui.HGap(0, 1),
                 ]),
-                ui.Label({"Text": "SPEAKER DIARIZATION", "StyleSheet": theme.SECTION, "Weight": 0}),
+                ui.Label({"Text": "OPENAI / SPEAKER DIARIZATION", "StyleSheet": theme.SECTION, "Weight": 0}),
                 ui.HGroup({"Spacing": 7, "Weight": 0}, [
                     ui.Label({"Text": "Model", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
-                    combo(ui, "SettingOpenAIModel", 1),
+                    ui.Label({"Text": "gpt-4o-transcribe-diarize", "StyleSheet": theme.SECTION, "Weight": 1}),
                 ]),
-                ui.Label({
-                    "ID": "OpenAIModelCapability",
-                    "Text": "",
-                    "WordWrap": True,
-                    "StyleSheet": theme.SUBTITLE,
-                    "Weight": 0,
-                }),
                 ui.CheckBox({"ID": "SettingOpenAITranscript", "Text": "Include transcript text in OpenAI speaker-marker notes", "Weight": 0}),
                 ui.Label({"Text": "ELEVENLABS / SCRIBE", "StyleSheet": theme.SECTION, "Weight": 0}),
                 ui.HGroup({"Spacing": 7, "Weight": 0}, [
