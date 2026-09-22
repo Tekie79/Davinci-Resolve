@@ -7,8 +7,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from meher_resolve_hub.credential_service import (
+    ElevenLabsCredentialStore,
     OpenAICredentialStore,
     _mask,
+    resolve_elevenlabs_api_key,
     resolve_openai_api_key,
 )
 
@@ -63,6 +65,23 @@ class CredentialServiceTests(unittest.TestCase):
         store = self.store()
         with patch.dict(os.environ, {"OPENAI_API_KEY": "env"}, clear=False):
             self.assertEqual(resolve_openai_api_key(None, store), "env")
+
+    def test_elevenlabs_environment_is_separate(self):
+        store = ElevenLabsCredentialStore.__new__(ElevenLabsCredentialStore)
+        store.service_name = "test-service"
+        store.account = "elevenlabs-account"
+        store.provider_name = "ElevenLabs"
+        store.environment_variable = "ELEVENLABS_API_KEY"
+        store._backend = FakeBackend()
+        store._backend_name = "fake-keychain"
+        store._backend_error = ""
+        with patch.dict(
+            os.environ,
+            {"OPENAI_API_KEY": "openai-env", "ELEVENLABS_API_KEY": "eleven-env"},
+            clear=False,
+        ):
+            self.assertEqual(resolve_elevenlabs_api_key(None, store), "eleven-env")
+            self.assertNotEqual(resolve_openai_api_key(None, self.store()), "eleven-env")
 
     def test_mask_shows_only_tail(self):
         masked = _mask("sk-1234567890abcd")
