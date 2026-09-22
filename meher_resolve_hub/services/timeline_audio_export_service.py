@@ -226,6 +226,7 @@ class TimelineAudioExportService:
 
         staging = Path(tempfile.mkdtemp(prefix=".meher-mp3-", dir=str(output_root)))
         job_id = ""
+        keep_staging = False
         try:
             _call(project, "SetCurrentRenderMode", False, 0)
             settings = {
@@ -257,10 +258,13 @@ class TimelineAudioExportService:
                     "Codex_Mp3 finished but no valid MP3 output was found."
                 ], {"status": status}
 
+            keep_staging = True
             return output, job_id, [], {"status": status, "preset": preset_name}
         finally:
             if job_id:
                 _call(project, "DeleteRenderJob", False, job_id)
+            if not keep_staging:
+                shutil.rmtree(str(staging), ignore_errors=True)
 
     def _render_wav_fallback(
         self,
@@ -279,6 +283,7 @@ class TimelineAudioExportService:
 
         staging = Path(tempfile.mkdtemp(prefix=".meher-wav-", dir=str(output_root)))
         job_id = ""
+        keep_staging = False
         try:
             _call(project, "SetCurrentRenderMode", False, 0)
             settings = {
@@ -319,6 +324,7 @@ class TimelineAudioExportService:
                 ], {"status": status}
 
             warnings = [warning] if warning else []
+            keep_staging = True
             return output, job_id, warnings, {
                 "status": status,
                 "render_format": render_format,
@@ -329,6 +335,8 @@ class TimelineAudioExportService:
         finally:
             if job_id:
                 _call(project, "DeleteRenderJob", False, job_id)
+            if not keep_staging:
+                shutil.rmtree(str(staging), ignore_errors=True)
 
     def export_select_timeline_audio(
         self,
@@ -389,6 +397,7 @@ class TimelineAudioExportService:
         )
 
         staged = None
+        wav_staged = None
         job_id = ""
         details = {
             "timeline": timeline_name,
@@ -471,15 +480,12 @@ class TimelineAudioExportService:
             )
         finally:
             self._restore(project, previous_format, previous_mode)
-            try:
-                for path in output_root.glob(".meher-mp3-*"):
-                    if path.is_dir():
-                        shutil.rmtree(str(path), ignore_errors=True)
-                for path in output_root.glob(".meher-wav-*"):
-                    if path.is_dir():
-                        shutil.rmtree(str(path), ignore_errors=True)
-            except Exception:
-                pass
+            for exported in (staged, wav_staged):
+                try:
+                    if exported:
+                        shutil.rmtree(str(Path(exported).parent), ignore_errors=True)
+                except Exception:
+                    pass
 
     @staticmethod
     def _restore(project, previous_format, previous_mode):
