@@ -25,8 +25,10 @@ from .selection import SelectionEngine, SelectionUnavailable
 from .services.keyword_clip_rename_service import KeywordClipRenameService
 from .services.metadata_service import MetadataService
 from .services.rename_service import RenameService
+from .services.speaker_marker_service import SpeakerMarkerService
 from .services.still_service import StillService
 from .speaker_markers import analyze_select_speakers_and_mark as run_speaker_marker_workflow
+from .timecode import timeline_frame_to_timecode
 from .utils import proxy_id, same_proxy
 
 
@@ -622,6 +624,199 @@ async def export_timeline_clip_visuals(
             "from facial appearance; use Keywords/editor metadata for character names."
         ),
     }
+
+
+@mcp.tool()
+async def export_active_speaker_visual_samples(
+    selected_only: bool = False,
+    sample_fps: float = 6.0,
+    max_frames_per_clip: int = 24,
+    max_clips: int = 50,
+) -> Dict[str, object]:
+    """Export temporal PNG samples for visual active-speaker analysis.
+
+    This tool exports multiple frames per video TimelineItem so Codex can inspect
+    mouth/body motion over time. It does not use audio and does not assign
+    character identity from faces.
+    """
+    resolve = _resolve()
+    context_service = ResolveContextService(resolve)
+    context = context_service.refresh_context()
+    if not context.project or not context.timeline:
+        raise RuntimeError("Open the target Resolve timeline first.")
+    if "SELECT" not in str(context.timeline_name or "").upper():
+        raise RuntimeError(
+            "Active-speaker visual analysis requires a Select timeline."
+        )
+
+    fps = float(context_service.get_project_fps())
+    requested_sample_fps = max(1.0, min(float(sample_fps), min(12.0, fps)))
+    max_frames = max(3, min(int(max_frames_per_clip), 120))
+    items = _video_timeline_items(
+        context.timeline, selected_only=bool(selected_only)
+    )[: max(1, min(int(max_clips), 200))]
+    if not items:
+        raise RuntimeError("No video TimelineItems were found.")
+
+    folder = Path(tempfile.mkdtemp(prefix="meher-visual-frames-"))
+    stills = StillService(resolve, context_service)
+    previous_timecode = str(context.current_timecode or "")
+    groups = []
+    capture_errors = []
+
+    try:
+        for clip_index, item in enumerate(items, 1):
+            try:
+                start = int(item.GetStart())
+                end = int(item.GetEnd()) - 1
+                clip = item.GetMediaPoolItem()
+                clip_name = str(clip.GetName() or item.GetName() or "Clip")
+                metadata = dict(clip.GetMetadata() or {})
+            except Exception as exc:
+                capture_errors.append("Clip %s metadata: %s" % (clip_index, exc))
+                continue
+            if end < start:
+                continue
+
+            stride = max(1, int(round(fps / requested_sample_fps)))
+            frames = list(range(start, end + 1, stride))
+            if frames and frames[-1] != end:
+                frames.append(end)
+            if len(frames) > max_frames:
+                if max_frames == 1:
+                    frames = [start]
+                else:
+                    span = max(0, end - start)
+                    frames = sorted(set(
+                        start + int(round(span * index / float(max_frames - 1)))
+                        for index in range(max_frames)
+                    ))
+
+            samples = []
+            for sample_index, frame in enumerate(frames, 1):
+                try:
+                    tc = timeline_frame_to_timecode(
+                        context.timeline, frame, fps
+                    )
+                    context.timeline.SetCurrentTimecode(tc)
+                    if not stills._wait_for_timecode(context.timeline, tc):
+                        raise RuntimeError(
+                            "Resolve did not reach %s before capture." % tc
+                        )
+                    filename = "clip-%03d_sample-%03d_f%s.png" % (
+                        clip_index, sample_index, frame
+                    )
+                    destination = folder / filename
+                    actual = stills._export_current(
+                        context.project, context.timeline, destination
+                    )
+                    if not actual:
+                        raise RuntimeError("frame export failed")
+                    samples.append({
+                        "timeline_frame": int(frame),
+                        "timecode": tc,
+                        "image_path": str(actual),
+                    })
+                except Exception as exc:
+                    capture_errors.append(
+                        "%s frame %s: %s" % (clip_name, frame, exc)
+                    )
+
+            groups.append({
+                "timeline_item_id": proxy_id(item),
+                "media_pool_id": proxy_id(clip),
+                "clip_name": clip_name,
+                "timeline_start": start,
+                "timeline_end_exclusive": end + 1,
+                "keywords": str(metadata.get("Keywords", "") or ""),
+                "samples": samples,
+            })
+    finally:
+        if previous_timecode:
+            try:
+                context.timeline.SetCurrentTimecode(previous_timecode)
+                stills._wait_for_timecode(
+                    context.timeline, previous_timecode
+                )
+            except Exception:
+                capture_errors.append(
+                    "Could not restore the previous playhead position."
+                )
+
+    return {
+        "timeline": context.timeline_name,
+        "sample_fps": requested_sample_fps,
+        "temporary_directory": str(folder),
+        "clips": groups,
+        "errors": capture_errors,
+        "instruction": (
+            "Analyze temporal mouth/body motion to find active visible speakers. "
+            "Do not identify real people from facial appearance; use Keywords or "
+            "editor-confirmed metadata for character identity."
+        ),
+    }
+
+
+@mcp.tool()
+async def apply_speaker_segments_to_clips(
+    segments: List[Dict[str, object]],
+    episode: Optional[int] = None,
+    scene: Optional[str] = None,
+    timeline_name: Optional[str] = None,
+    speaker_colors: Optional[Dict[str, str]] = None,
+    mode: str = "preview",
+) -> Dict[str, object]:
+    """Preview/apply precomputed visual, audio, or hybrid ranges as clip markers."""
+    if mode not in ("preview", "apply"):
+        raise RuntimeError("mode must be preview or apply.")
+    if not segments:
+        raise RuntimeError("At least one speaker segment is required.")
+
+    colors = dict(speaker_colors or {})
+    unsupported = sorted(set(colors.values()) - set(MARKER_COLORS))
+    if unsupported:
+        raise RuntimeError(
+            "Unsupported Resolve marker colors: %s" % ", ".join(unsupported)
+        )
+
+    resolve = _resolve()
+    project = _project(resolve)
+    target = _target_timeline(
+        project,
+        timeline_name=timeline_name,
+        episode=episode,
+        scene=scene,
+    )
+    previous = project.GetCurrentTimeline()
+    switched = not same_proxy(previous, target)
+
+    try:
+        if switched:
+            changed = project.SetCurrentTimeline(target)
+            if not changed:
+                raise RuntimeError(
+                    "Resolve could not activate the target Select timeline."
+                )
+
+        context = ResolveContextService(resolve)
+        result = SpeakerMarkerService(context).analyze_select_speakers_and_mark(
+            segments=list(segments),
+            timeline=target,
+            speaker_colors=colors,
+            mode=mode,
+        )
+        output = _result_dict(result)
+        output["timeline"] = _name(target)
+        output["mode"] = mode
+        output["segment_source"] = "precomputed"
+        output["marker_target"] = "TimelineItem clip markers"
+        return output
+    finally:
+        if switched and previous:
+            try:
+                project.SetCurrentTimeline(previous)
+            except Exception:
+                pass
 
 
 @mcp.tool()
