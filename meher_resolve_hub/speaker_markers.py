@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .resolve_context import ResolveContextService
 from .services.openai_diarization_service import OpenAIDiarizationAnalyzer
+from .services.elevenlabs_diarization_service import ElevenLabsDiarizationAnalyzer
 from .services.speaker_marker_service import SpeakerMarkerService
 from .services.timeline_audio_export_service import TimelineAudioExportService
 
@@ -38,7 +39,14 @@ def analyze_audio_with_openai(
     known_speaker_references=None,
     openai_api_key=None,
     openai_model="gpt-4o-transcribe-diarize",
+    elevenlabs_api_key=None,
+    elevenlabs_model="scribe_v2",
+    analysis_provider="openai",
     include_transcript=False,
+    elevenlabs_language_code=None,
+    elevenlabs_num_speakers=None,
+    elevenlabs_use_speaker_library=False,
+    elevenlabs_keyterms=None,
 ):
     """Analyze an audio file outside Resolve and return timed speaker segments."""
     analyzer = OpenAIDiarizationAnalyzer(
@@ -53,6 +61,38 @@ def analyze_audio_with_openai(
         "segments": segments,
         "warnings": list(analyzer.last_warnings),
         "model": openai_model,
+    }
+
+
+def analyze_audio_with_elevenlabs(
+    audio_path,
+    elevenlabs_api_key=None,
+    elevenlabs_model="scribe_v2",
+    include_transcript=False,
+    language_code=None,
+    num_speakers=None,
+    use_speaker_library=False,
+    keyterms=None,
+):
+    """Analyze an audio file with ElevenLabs Scribe v2."""
+    analyzer = ElevenLabsDiarizationAnalyzer(
+        audio_path=audio_path,
+        api_key=elevenlabs_api_key,
+        model=elevenlabs_model,
+        include_transcript=include_transcript,
+        language_code=language_code,
+        num_speakers=num_speakers,
+        use_speaker_library=use_speaker_library,
+        keyterms=keyterms,
+    )
+    segments = analyzer.analyze(None, 24.0)
+    return {
+        "segments": segments,
+        "warnings": list(analyzer.last_warnings),
+        "model": elevenlabs_model,
+        "provider": "elevenlabs",
+        "language_detected": analyzer.language_detected,
+        "language_probability": analyzer.language_probability,
     }
 
 
@@ -137,13 +177,33 @@ def analyze_select_speakers_and_mark(
                 )
             audio_path = export_result.path
 
-        created_analyzer = OpenAIDiarizationAnalyzer(
-            audio_path=audio_path,
-            api_key=openai_api_key,
-            known_speaker_references=known_speaker_references,
-            model=openai_model,
-            include_transcript=include_transcript,
-        )
+        provider = str(analysis_provider or "openai").strip().casefold()
+        if provider == "openai":
+            created_analyzer = OpenAIDiarizationAnalyzer(
+                audio_path=audio_path,
+                api_key=openai_api_key,
+                known_speaker_references=known_speaker_references,
+                model=openai_model,
+                include_transcript=include_transcript,
+            )
+        elif provider == "elevenlabs":
+            created_analyzer = ElevenLabsDiarizationAnalyzer(
+                audio_path=audio_path,
+                api_key=elevenlabs_api_key,
+                model=elevenlabs_model,
+                include_transcript=include_transcript,
+                language_code=elevenlabs_language_code,
+                num_speakers=elevenlabs_num_speakers,
+                use_speaker_library=elevenlabs_use_speaker_library,
+                keyterms=elevenlabs_keyterms,
+            )
+        else:
+            from .models.operation import OperationResult
+            return OperationResult(
+                False,
+                failed=1,
+                errors=["analysis_provider must be openai or elevenlabs."],
+            )
 
     service = SpeakerMarkerService(context, analyzer=created_analyzer)
     try:
@@ -170,6 +230,17 @@ def analyze_select_speakers_and_mark(
             })
         if created_analyzer and hasattr(created_analyzer, "last_warnings"):
             result.warnings.extend(list(created_analyzer.last_warnings))
+        if created_analyzer:
+            result.details.insert(0, {
+                "analysis_provider": str(analysis_provider or "openai").casefold(),
+                "analysis_model": (
+                    elevenlabs_model
+                    if str(analysis_provider or "openai").casefold() == "elevenlabs"
+                    else openai_model
+                ),
+                "language_detected": getattr(created_analyzer, "language_detected", ""),
+                "language_probability": getattr(created_analyzer, "language_probability", None),
+            })
         return result
     finally:
         if export_result and not keep_analysis_audio:
