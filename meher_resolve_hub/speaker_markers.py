@@ -26,7 +26,7 @@ def _cleanup_temporary_export(export_result):
 
 
 def export_select_timeline_audio(resolve, timeline=None, **kwargs):
-    """Export the actual Select-timeline mix as a temporary WAV for Codex."""
+    """Export Select audio using Codex_Mp3 first, with WAV as fallback."""
     context = ResolveContextService(resolve)
     return TimelineAudioExportService(context).export_select_timeline_audio(
         timeline=timeline, **kwargs
@@ -98,7 +98,8 @@ def analyze_select_speakers_and_mark(
 
     Normal one-call path for Codex:
       Resolve Select timeline
-        -> temporary audio-only WAV export
+        -> Codex_Mp3 preset to persistent reference MP3
+        -> WAV fallback only when needed
         -> OpenAI speaker diarization
         -> speaker/color mapping
         -> verified TimelineItem duration markers
@@ -157,7 +158,12 @@ def analyze_select_speakers_and_mark(
             result.warnings = list(export_result.warnings) + list(result.warnings)
             result.details.insert(0, {
                 "audio_export": export_result.path,
-                "temporary_audio": export_result.details.get("temporary", False),
+                "analysis_format": export_result.details.get("analysis_format", ""),
+                "render_preset": export_result.details.get("render_preset", ""),
+                "export_directory": export_result.details.get("export_directory", ""),
+                "directory_role": export_result.details.get("directory_role", ""),
+                "used_wav_fallback": export_result.details.get("used_wav_fallback", False),
+                "persistent_audio": export_result.details.get("persistent", False),
                 "render_status": export_result.details.get("status", {}),
             })
         if created_analyzer and hasattr(created_analyzer, "last_warnings"):
