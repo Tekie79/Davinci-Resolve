@@ -52,6 +52,6 @@ echo
 echo "Next:"
 echo "  1. Restart DaVinci Resolve if the script menu was already open."
 echo "  2. Open Workspace > Scripts > Meher Flow Resolve Hub."
-echo "  3. Save the OpenAI API key under Settings > AI / OpenAI."
+echo "  3. Save OpenAI and/or ElevenLabs API keys under Settings > AI / Providers."
 echo "  4. Register the MCP server with Codex:"
 printf '     codex mcp add meher-resolve -- "%s"\n' "$BIN_DIR/run-resolve-mcp"
