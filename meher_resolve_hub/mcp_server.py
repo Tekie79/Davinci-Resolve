@@ -381,6 +381,9 @@ async def analyze_select_speakers_and_mark(
     mode: str = "preview",
     voice_reference_dir: Optional[str] = None,
     include_transcript: bool = False,
+    audio_render_preset: str = "Codex_Mp3",
+    audio_primary_dir: str = "/Volumes/Harvest SSD/Select_ref_mp3_audios",
+    audio_fallback_dir: str = "/Users/harvest/Documents/Ysew_Project/Ref audio",
 ) -> Dict[str, object]:
     """Analyze a Select timeline audio and write speaker range clip markers.
 
@@ -426,6 +429,12 @@ async def analyze_select_speakers_and_mark(
             speaker_colors=colors,
             mode=mode,
             include_transcript=bool(include_transcript),
+            audio_export_options={
+                "render_preset": str(audio_render_preset),
+                "primary_output_dir": str(audio_primary_dir),
+                "fallback_output_dir": str(audio_fallback_dir),
+                "preferred_format": "mp3",
+            },
         )
         result.warnings = reference_warnings + list(result.warnings)
         output = _result_dict(result)
