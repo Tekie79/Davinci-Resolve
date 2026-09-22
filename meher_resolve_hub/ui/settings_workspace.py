@@ -38,11 +38,15 @@ def build(ui):
             ui.VGroup({"Spacing": 10, "StyleSheet": theme.SURFACE}, [
                 ui.Label({"Text": "AI / PROVIDERS", "StyleSheet": theme.SECTION, "Weight": 0}),
                 ui.Label({
-                    "Text": "The API key is stored in the operating-system credential store (macOS Keychain on macOS). It is never written to settings.json or Git.",
+                    "Text": "Provider API keys are stored in the operating-system credential store (macOS Keychain on macOS). They are never written to settings.json or Git.",
                     "WordWrap": True,
                     "StyleSheet": theme.SUBTITLE,
                     "Weight": 0,
                 }),
+                ui.HGroup({"Spacing": 7, "Weight": 0}, [
+                    ui.Label({"Text": "Default speaker provider", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
+                    combo(ui, "SettingSpeakerProvider", 1),
+                ]),
                 ui.HGroup({"Spacing": 7, "Weight": 0}, [
                     ui.Label({"Text": "Status", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
                     ui.Label({"ID": "OpenAICredentialStatus", "Text": "Checking…", "StyleSheet": theme.SECTION, "Weight": 1}),
@@ -66,8 +70,15 @@ def build(ui):
                 ui.Label({"Text": "SPEAKER DIARIZATION", "StyleSheet": theme.SECTION, "Weight": 0}),
                 ui.HGroup({"Spacing": 7, "Weight": 0}, [
                     ui.Label({"Text": "Model", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
-                    line_edit(ui, "SettingOpenAIModel", "gpt-4o-transcribe-diarize"),
+                    combo(ui, "SettingOpenAIModel", 1),
                 ]),
+                ui.Label({
+                    "ID": "OpenAIModelCapability",
+                    "Text": "",
+                    "WordWrap": True,
+                    "StyleSheet": theme.SUBTITLE,
+                    "Weight": 0,
+                }),
                 ui.CheckBox({"ID": "SettingOpenAITranscript", "Text": "Include transcript text in OpenAI speaker-marker notes", "Weight": 0}),
                 ui.Label({"Text": "ELEVENLABS / SCRIBE", "StyleSheet": theme.SECTION, "Weight": 0}),
                 ui.HGroup({"Spacing": 7, "Weight": 0}, [
