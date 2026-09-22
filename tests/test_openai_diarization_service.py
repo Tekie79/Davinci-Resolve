@@ -10,8 +10,9 @@ from meher_resolve_hub.services.openai_diarization_service import OpenAIDiarizat
 
 
 class FakeResponse:
-    def __init__(self, segments):
+    def __init__(self, segments, language=""):
         self.segments = segments
+        self.language = language
 
 
 def write_wav(path, seconds=1.0, sample_rate=16000):
@@ -85,6 +86,39 @@ class OpenAIDiarizationAnalyzerTests(unittest.TestCase):
             )
             segments = analyzer.analyze(None, 24.0)
             self.assertEqual(segments[0]["transcript"], "mixed dialogue")
+
+    def test_whisper_returns_unknown_timestamped_segments(self):
+        with tempfile.TemporaryDirectory() as folder:
+            audio = Path(folder) / "scene.wav"
+            write_wav(audio)
+            analyzer = FakeAnalyzer(
+                audio,
+                model="whisper-1",
+                include_transcript=True,
+                known_speaker_references={"Mike": audio},
+                responses=[FakeResponse([
+                    {"start": 0.1, "end": 0.6, "text": "ሰላም"},
+                    {"start": 0.8, "end": 1.2, "text": "hello"},
+                ], language="am")],
+            )
+            segments = analyzer.analyze(None, 24.0)
+            self.assertEqual(len(segments), 2)
+            self.assertEqual(segments[0]["speaker"], "UNKNOWN_WHISPER_001")
+            self.assertEqual(segments[1]["speaker"], "UNKNOWN_WHISPER_002")
+            self.assertEqual(segments[0]["source"], "openai:whisper-1")
+            self.assertEqual(segments[0]["evidence_status"], "UNKNOWN")
+            self.assertIn("ሰም", segments[0]["transcript"] or "ሰላም")
+            self.assertEqual(analyzer.language_detected, "am")
+            self.assertTrue(any("known-speaker" in value for value in analyzer.last_warnings))
+            self.assertTrue(any("not native speaker diarization" in value for value in analyzer.last_warnings))
+
+    def test_whisper_does_not_report_native_diarization(self):
+        analyzer = OpenAIDiarizationAnalyzer(
+            "/tmp/example.wav",
+            api_key="test",
+            model="whisper-1",
+        )
+        self.assertFalse(analyzer.supports_native_diarization)
 
     def test_large_wav_is_split_below_requested_limit(self):
         with tempfile.TemporaryDirectory() as folder:
