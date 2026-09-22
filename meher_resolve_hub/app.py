@@ -1,7 +1,7 @@
 """Resolve Hub composition root and launch helpers."""
 
 from .capabilities import CapabilityDetector
-from .credential_service import OpenAICredentialStore
+from .credential_service import ElevenLabsCredentialStore, OpenAICredentialStore
 from .history import OperationHistory
 from .logging_service import build_logger
 from .navigation import NavigationEngine
@@ -67,6 +67,7 @@ class ResolveHubApplication:
         self.thumbnails = ThumbnailCache(self.context, cache_folder, self.preferences.get("thumbnails", "enabled", True))
         self.capabilities = CapabilityDetector(resolve)
         self.credentials = OpenAICredentialStore()
+        self.elevenlabs_credentials = ElevenLabsCredentialStore()
         self.markers = MarkerService(self.context, self.history)
         self.speaker_markers = SpeakerMarkerService(self.context)
         self.metadata = MetadataService(self.history)
