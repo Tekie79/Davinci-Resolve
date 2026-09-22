@@ -1,20 +1,35 @@
-"""Temporary Select-timeline audio export for speaker analysis.
+"""Select-timeline audio export for speaker analysis.
 
-This service renders an audio-only WAV from the current Select timeline so an
-external/OpenAI analyzer can inspect the actual edited/synced audio. When
-ffmpeg is available it compresses that temporary analysis file to mono MP3 to
-reduce upload size; WAV remains the safe fallback. It restores
-the previous render format/codec and render mode when possible. Resolve does not
-expose a complete GetRenderSettings snapshot, so TargetDir/CustomName/export
-flags may remain changed in the Deliver settings after the temporary render.
+Yekermo Sew production defaults:
+- primary Resolve render preset: Codex_Mp3
+- primary directory: /Volumes/Harvest SSD/Select_ref_mp3_audios
+- directory fallback: /Users/harvest/Documents/Ysew_Project/Ref audio
+- filename stem: <Select timeline name>_mp3
+- WAV / Linear PCM is a fallback when the MP3 preset/export is unavailable,
+  invalid, or too large for the direct transcription upload path.
+
+The final analysis file is persistent. Renders are staged in an isolated
+subdirectory and published only after verification, so an older valid reference
+is not destroyed by a failed render.
+
+Resolve does not expose a complete render-settings snapshot. The service restores
+render mode and current format/codec when those APIs are available, but preset
+loading can still leave other Deliver-page settings changed.
 """
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 import shutil
-import subprocess
 import tempfile
 import time
+from uuid import uuid4
+
+
+DEFAULT_RENDER_PRESET = "Codex_Mp3"
+PRIMARY_EXPORT_DIRECTORY = Path("/Volumes/Harvest SSD/Select_ref_mp3_audios")
+FALLBACK_EXPORT_DIRECTORY = Path("/Users/harvest/Documents/Ysew_Project/Ref audio")
+DEFAULT_MAX_DIRECT_UPLOAD_BYTES = 24 * 1024 * 1024
 
 
 def _call(proxy, name, default=None, *args):
@@ -48,6 +63,64 @@ class TimelineAudioExportService:
         self.context_service = context_service
 
     @staticmethod
+    def _safe_stem(value):
+        text = "".join(
+            character if character.isalnum() or character in ("-", "_", " ")
+            else "_"
+            for character in str(value or "")
+        )
+        text = "_".join(part for part in text.strip().split())
+        return text.strip("_") or "SELECT"
+
+    @classmethod
+    def _default_stem(cls, timeline_name):
+        return cls._safe_stem(timeline_name) + "_mp3"
+
+    @staticmethod
+    def _prepare_directory(path):
+        path = Path(path).expanduser()
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / (".meher-write-test-%s" % uuid4().hex)
+            probe.write_bytes(b"ok")
+            probe.unlink()
+        except Exception as exc:
+            return None, str(exc)
+        return path, ""
+
+    @classmethod
+    def _resolve_output_directory(
+        cls,
+        output_dir=None,
+        primary_output_dir=PRIMARY_EXPORT_DIRECTORY,
+        fallback_output_dir=FALLBACK_EXPORT_DIRECTORY,
+    ):
+        if output_dir:
+            directory, error = cls._prepare_directory(output_dir)
+            if directory:
+                return directory, "explicit", []
+            return None, "", ["Requested export directory is unavailable: %s" % error]
+
+        warnings = []
+        primary, error = cls._prepare_directory(primary_output_dir)
+        if primary:
+            return primary, "primary", warnings
+        warnings.append(
+            "Primary Select reference-audio directory is unavailable (%s); using fallback."
+            % error
+        )
+
+        fallback, fallback_error = cls._prepare_directory(fallback_output_dir)
+        if fallback:
+            return fallback, "fallback", warnings
+
+        warnings.append(
+            "Fallback Select reference-audio directory is unavailable: %s"
+            % fallback_error
+        )
+        return None, "", warnings
+
+    @staticmethod
     def _wav_format_and_codec(project):
         formats = dict(_call(project, "GetRenderFormats", {}) or {})
         candidates = []
@@ -72,54 +145,190 @@ class TimelineAudioExportService:
             for codec in codec_candidates:
                 if not codec:
                     continue
-                if _call(project, "SetCurrentRenderFormatAndCodec", False, render_format, codec):
+                if _call(
+                    project,
+                    "SetCurrentRenderFormatAndCodec",
+                    False,
+                    render_format,
+                    codec,
+                ):
                     return render_format, codec
         return "", ""
 
     @staticmethod
-    def _compress_mp3(wav_path, bitrate_kbps=64):
-        """Compress analysis audio with ffmpeg when available."""
-        executable = shutil.which("ffmpeg")
-        if not executable:
-            return None, "ffmpeg is not installed; using WAV for OpenAI analysis."
-        wav_path = Path(wav_path)
-        mp3_path = wav_path.with_suffix(".mp3")
-        command = [
-            executable,
-            "-y",
-            "-hide_banner",
-            "-loglevel", "error",
-            "-i", str(wav_path),
-            "-vn",
-            "-ac", "1",
-            "-b:a", "%dk" % max(32, int(bitrate_kbps)),
-            str(mp3_path),
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=300,
-                check=False,
-            )
-        except Exception as exc:
-            return None, "MP3 compression failed; using WAV: %s" % exc
-        if completed.returncode != 0 or not mp3_path.is_file() or mp3_path.stat().st_size <= 0:
-            message = (completed.stderr or "ffmpeg returned no usable MP3").strip()
-            return None, "MP3 compression failed; using WAV: %s" % message
-        return mp3_path, ""
-
-    @staticmethod
-    def _find_output(folder, custom_name):
+    def _find_output(folder, custom_name, extension):
         folder = Path(folder)
+        suffixes = {str(extension or "").lower(), str(extension or "").upper()}
         candidates = []
-        for pattern in ("%s*.wav" % custom_name, "%s*.WAV" % custom_name):
-            candidates.extend(folder.glob(pattern))
+        for suffix in suffixes:
+            if suffix:
+                candidates.extend(folder.glob("%s*.%s" % (custom_name, suffix.lstrip("."))))
+        if not candidates:
+            return None
+        candidates = [
+            path for path in candidates
+            if path.is_file() and path.stat().st_size > 0
+        ]
         if not candidates:
             return None
         return max(candidates, key=lambda path: path.stat().st_mtime_ns)
+
+    @staticmethod
+    def _wait_for_render(project, job_id, timeout_seconds):
+        deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+        while _call(project, "IsRenderingInProgress", False):
+            if time.monotonic() >= deadline:
+                _call(project, "StopRendering", None)
+                return False, "Timed out waiting for Select audio render."
+            time.sleep(0.25)
+
+        status = dict(_call(project, "GetRenderJobStatus", {}, job_id) or {})
+        status_text = str(
+            status.get("JobStatus", status.get("jobStatus", ""))
+        ).casefold()
+        if status_text and not any(
+            token in status_text for token in ("complete", "completed", "success")
+        ):
+            return False, "Resolve render did not complete successfully: %s" % status
+        return True, status
+
+    @staticmethod
+    def _publish(staged, destination):
+        staged = Path(staged)
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temp_destination = destination.with_name(
+            ".%s.publish-%s" % (destination.name, uuid4().hex)
+        )
+        shutil.copy2(str(staged), str(temp_destination))
+        if not temp_destination.is_file() or temp_destination.stat().st_size <= 0:
+            try:
+                temp_destination.unlink()
+            except Exception:
+                pass
+            raise RuntimeError("Published analysis audio could not be verified.")
+        os.replace(str(temp_destination), str(destination))
+        return destination
+
+    def _render_with_preset(
+        self,
+        project,
+        output_root,
+        safe_name,
+        preset_name,
+        timeout_seconds,
+    ):
+        if not _call(project, "LoadRenderPreset", False, str(preset_name)):
+            return None, "", [
+                "Resolve render preset '%s' is unavailable or could not be loaded."
+                % preset_name
+            ], {}
+
+        staging = Path(tempfile.mkdtemp(prefix=".meher-mp3-", dir=str(output_root)))
+        job_id = ""
+        try:
+            _call(project, "SetCurrentRenderMode", False, 0)
+            settings = {
+                "SelectAllFrames": True,
+                "TargetDir": str(staging),
+                "CustomName": safe_name,
+                "ExportVideo": False,
+                "ExportAudio": True,
+            }
+            if not _call(project, "SetRenderSettings", False, settings):
+                return None, "", [
+                    "Resolve rejected the Codex_Mp3 render settings override."
+                ], {}
+
+            job_id = str(_call(project, "AddRenderJob", "") or "")
+            if not job_id:
+                return None, "", ["Resolve could not create the Codex_Mp3 render job."], {}
+
+            if not _call(project, "StartRendering", False, job_id):
+                return None, job_id, ["Resolve did not start the Codex_Mp3 render."], {}
+
+            ok, status = self._wait_for_render(project, job_id, timeout_seconds)
+            if not ok:
+                return None, job_id, [str(status)], {}
+
+            output = self._find_output(staging, safe_name, "mp3")
+            if not output or output.stat().st_size <= 0:
+                return None, job_id, [
+                    "Codex_Mp3 finished but no valid MP3 output was found."
+                ], {"status": status}
+
+            return output, job_id, [], {"status": status, "preset": preset_name}
+        finally:
+            if job_id:
+                _call(project, "DeleteRenderJob", False, job_id)
+
+    def _render_wav_fallback(
+        self,
+        project,
+        output_root,
+        safe_name,
+        sample_rate,
+        bit_depth,
+        timeout_seconds,
+    ):
+        render_format, codec = self._wav_format_and_codec(project)
+        if not render_format:
+            return None, "", [
+                "Resolve did not expose a usable WAV / Linear PCM fallback."
+            ], {}
+
+        staging = Path(tempfile.mkdtemp(prefix=".meher-wav-", dir=str(output_root)))
+        job_id = ""
+        try:
+            _call(project, "SetCurrentRenderMode", False, 0)
+            settings = {
+                "SelectAllFrames": True,
+                "TargetDir": str(staging),
+                "CustomName": safe_name,
+                "ExportVideo": False,
+                "ExportAudio": True,
+                "AudioCodec": codec,
+                "AudioBitDepth": int(bit_depth),
+                "AudioSampleRate": int(sample_rate),
+            }
+            if not _call(project, "SetRenderSettings", False, settings):
+                settings["AudioSampleRate"] = 48000
+                if not _call(project, "SetRenderSettings", False, settings):
+                    return None, "", [
+                        "Resolve rejected WAV fallback render settings."
+                    ], {}
+                warning = "Resolve rejected 16 kHz WAV; fallback used 48 kHz."
+            else:
+                warning = ""
+
+            job_id = str(_call(project, "AddRenderJob", "") or "")
+            if not job_id:
+                return None, "", ["Resolve could not create WAV fallback render job."], {}
+
+            if not _call(project, "StartRendering", False, job_id):
+                return None, job_id, ["Resolve did not start WAV fallback render."], {}
+
+            ok, status = self._wait_for_render(project, job_id, timeout_seconds)
+            if not ok:
+                return None, job_id, [str(status)], {}
+
+            output = self._find_output(staging, safe_name, "wav")
+            if not output or output.stat().st_size <= 44:
+                return None, job_id, [
+                    "Resolve finished but the WAV fallback could not be verified."
+                ], {"status": status}
+
+            warnings = [warning] if warning else []
+            return output, job_id, warnings, {
+                "status": status,
+                "render_format": render_format,
+                "render_codec": codec,
+                "sample_rate": settings["AudioSampleRate"],
+                "bit_depth": int(bit_depth),
+            }
+        finally:
+            if job_id:
+                _call(project, "DeleteRenderJob", False, job_id)
 
     def export_select_timeline_audio(
         self,
@@ -129,156 +338,148 @@ class TimelineAudioExportService:
         sample_rate=16000,
         bit_depth=16,
         preferred_format="mp3",
-        mp3_bitrate_kbps=64,
+        render_preset=DEFAULT_RENDER_PRESET,
+        primary_output_dir=PRIMARY_EXPORT_DIRECTORY,
+        fallback_output_dir=FALLBACK_EXPORT_DIRECTORY,
+        max_direct_upload_bytes=DEFAULT_MAX_DIRECT_UPLOAD_BYTES,
         timeout_seconds=1800,
         require_select=True,
+        **_legacy_kwargs
     ):
         context = self.context_service.refresh_context()
         project = context.project
         timeline = timeline or context.timeline
         if not project or not timeline:
             return TimelineAudioExportResult(
-                False, errors=["Open a Resolve project and target Select timeline first."]
+                False,
+                errors=["Open a Resolve project and target Select timeline first."],
             )
 
         timeline_name = str(_call(timeline, "GetName", context.timeline_name) or "")
         if require_select and "SELECT" not in timeline_name.upper():
             return TimelineAudioExportResult(
-                False, errors=["Target timeline is not a Select timeline: %s" % timeline_name]
+                False,
+                errors=["Target timeline is not a Select timeline: %s" % timeline_name],
             )
 
-        output_root = Path(output_dir) if output_dir else Path(
-            tempfile.mkdtemp(prefix="meher-select-audio-")
+        output_root, directory_role, directory_warnings = self._resolve_output_directory(
+            output_dir=output_dir,
+            primary_output_dir=primary_output_dir,
+            fallback_output_dir=fallback_output_dir,
         )
-        output_root.mkdir(parents=True, exist_ok=True)
-        safe_name = custom_name or "speaker-analysis"
-        safe_name = "".join(
-            character if character.isalnum() or character in ("-", "_") else "_"
-            for character in safe_name
-        ).strip("_") or "speaker-analysis"
+        if not output_root:
+            return TimelineAudioExportResult(
+                False,
+                warnings=directory_warnings,
+                errors=[
+                    "Neither the primary nor fallback Select reference-audio directory is writable."
+                ],
+            )
 
+        safe_name = self._safe_stem(custom_name) if custom_name else self._default_stem(timeline_name)
         previous_format = dict(
             _call(project, "GetCurrentRenderFormatAndCodec", {}) or {}
         )
         previous_mode = _call(project, "GetCurrentRenderMode", None)
-        warnings = [
-            "Resolve does not expose a complete current render-settings snapshot. "
-            "The previous render format/codec and mode are restored, but temporary "
-            "TargetDir/CustomName/ExportAudio settings may remain visible on Deliver."
-        ]
-
-        render_format, codec = self._wav_format_and_codec(project)
-        if not render_format:
-            return TimelineAudioExportResult(
-                False,
-                warnings=warnings,
-                errors=["Resolve did not expose a usable WAV / Linear PCM render format."],
-            )
-
-        _call(project, "SetCurrentRenderMode", False, 1)
-        settings = {
-            "SelectAllFrames": True,
-            "TargetDir": str(output_root),
-            "CustomName": safe_name,
-            "ExportVideo": False,
-            "ExportAudio": True,
-            "AudioCodec": codec,
-            "AudioBitDepth": int(bit_depth),
-            "AudioSampleRate": int(sample_rate),
-        }
-        if not _call(project, "SetRenderSettings", False, settings):
-            # Some projects/Resolve builds may reject 16 kHz. Retry at project-like
-            # production sample rate while retaining 16-bit temporary analysis audio.
-            settings["AudioSampleRate"] = 48000
-            if not _call(project, "SetRenderSettings", False, settings):
-                self._restore(project, previous_format, previous_mode)
-                return TimelineAudioExportResult(
-                    False,
-                    warnings=warnings,
-                    errors=["Resolve rejected the temporary audio-only render settings."],
-                )
-            warnings.append("Resolve rejected 16 kHz; temporary analysis audio used 48 kHz.")
-
-        job_id = str(_call(project, "AddRenderJob", "") or "")
-        if not job_id:
-            self._restore(project, previous_format, previous_mode)
-            return TimelineAudioExportResult(
-                False, warnings=warnings, errors=["Resolve could not create the audio render job."]
-            )
-
-        started = _call(project, "StartRendering", False, job_id)
-        if not started:
-            _call(project, "DeleteRenderJob", False, job_id)
-            self._restore(project, previous_format, previous_mode)
-            return TimelineAudioExportResult(
-                False,
-                job_id=job_id,
-                warnings=warnings,
-                errors=["Resolve did not start the temporary audio render."],
-            )
-
-        deadline = time.time() + max(1, float(timeout_seconds))
-        while _call(project, "IsRenderingInProgress", False):
-            if time.time() >= deadline:
-                _call(project, "StopRendering", None)
-                _call(project, "DeleteRenderJob", False, job_id)
-                self._restore(project, previous_format, previous_mode)
-                return TimelineAudioExportResult(
-                    False,
-                    job_id=job_id,
-                    warnings=warnings,
-                    errors=["Timed out waiting for the temporary Select audio render."],
-                )
-            time.sleep(0.25)
-
-        status = dict(_call(project, "GetRenderJobStatus", {}, job_id) or {})
-        output = self._find_output(output_root, safe_name)
-        _call(project, "DeleteRenderJob", False, job_id)
-        self._restore(project, previous_format, previous_mode)
-
-        if output is None or not output.is_file() or output.stat().st_size <= 44:
-            return TimelineAudioExportResult(
-                False,
-                job_id=job_id,
-                warnings=warnings,
-                errors=["Resolve finished but the temporary WAV could not be verified."],
-                details={"status": status, "output_dir": str(output_root)},
-            )
-
-        analysis_output = output
-        analysis_format = "wav"
-        if str(preferred_format or "").lower() == "mp3":
-            compressed, compression_warning = self._compress_mp3(
-                output, bitrate_kbps=mp3_bitrate_kbps
-            )
-            if compressed:
-                analysis_output = compressed
-                analysis_format = "mp3"
-                if output_dir is None:
-                    try:
-                        output.unlink()
-                    except Exception:
-                        pass
-            elif compression_warning:
-                warnings.append(compression_warning)
-
-        return TimelineAudioExportResult(
-            True,
-            path=str(analysis_output),
-            job_id=job_id,
-            warnings=warnings,
-            details={
-                "timeline": timeline_name,
-                "status": status,
-                "sample_rate_requested": settings["AudioSampleRate"],
-                "bit_depth": int(bit_depth),
-                "render_format": render_format,
-                "render_codec": codec,
-                "analysis_format": analysis_format,
-                "mp3_bitrate_kbps": int(mp3_bitrate_kbps) if analysis_format == "mp3" else None,
-                "temporary": output_dir is None,
-            },
+        warnings = list(directory_warnings)
+        warnings.append(
+            "Resolve does not expose a complete render-settings snapshot. Render mode "
+            "and format/codec are restored when possible, but loading Codex_Mp3 may "
+            "leave other Deliver-page settings changed."
         )
+
+        staged = None
+        job_id = ""
+        details = {
+            "timeline": timeline_name,
+            "directory_role": directory_role,
+            "export_directory": str(output_root),
+            "render_preset": str(render_preset),
+            "filename_stem": safe_name,
+            "persistent": True,
+            "temporary": False,
+        }
+
+        try:
+            if str(preferred_format or "mp3").casefold() == "mp3":
+                staged, job_id, mp3_warnings, mp3_details = self._render_with_preset(
+                    project,
+                    output_root,
+                    safe_name,
+                    render_preset,
+                    timeout_seconds,
+                )
+                warnings.extend(mp3_warnings)
+                details.update(mp3_details)
+
+                if staged and staged.stat().st_size <= int(max_direct_upload_bytes):
+                    destination = output_root / ("%s.mp3" % safe_name)
+                    published = self._publish(staged, destination)
+                    details.update({
+                        "analysis_format": "mp3",
+                        "used_wav_fallback": False,
+                        "bytes": published.stat().st_size,
+                    })
+                    return TimelineAudioExportResult(
+                        True,
+                        path=str(published),
+                        job_id=job_id,
+                        warnings=warnings,
+                        details=details,
+                    )
+
+                if staged and staged.stat().st_size > int(max_direct_upload_bytes):
+                    warnings.append(
+                        "Codex_Mp3 output is larger than the direct analysis safety "
+                        "limit; using chunkable WAV fallback."
+                    )
+
+            wav_staged, wav_job, wav_warnings, wav_details = self._render_wav_fallback(
+                project,
+                output_root,
+                safe_name,
+                sample_rate,
+                bit_depth,
+                timeout_seconds,
+            )
+            warnings.extend(wav_warnings)
+            details.update(wav_details)
+            if not wav_staged:
+                return TimelineAudioExportResult(
+                    False,
+                    job_id=wav_job or job_id,
+                    warnings=warnings,
+                    errors=[
+                        "Codex_Mp3 export was unavailable/invalid and WAV fallback also failed."
+                    ],
+                    details=details,
+                )
+
+            destination = output_root / ("%s.wav" % safe_name)
+            published = self._publish(wav_staged, destination)
+            details.update({
+                "analysis_format": "wav",
+                "used_wav_fallback": True,
+                "bytes": published.stat().st_size,
+            })
+            return TimelineAudioExportResult(
+                True,
+                path=str(published),
+                job_id=wav_job,
+                warnings=warnings,
+                details=details,
+            )
+        finally:
+            self._restore(project, previous_format, previous_mode)
+            try:
+                for path in output_root.glob(".meher-mp3-*"):
+                    if path.is_dir():
+                        shutil.rmtree(str(path), ignore_errors=True)
+                for path in output_root.glob(".meher-wav-*"):
+                    if path.is_dir():
+                        shutil.rmtree(str(path), ignore_errors=True)
+            except Exception:
+                pass
 
     @staticmethod
     def _restore(project, previous_format, previous_mode):
@@ -287,4 +488,10 @@ class TimelineAudioExportService:
         render_format = str(previous_format.get("format", "") or "")
         codec = str(previous_format.get("codec", "") or "")
         if render_format and codec:
-            _call(project, "SetCurrentRenderFormatAndCodec", False, render_format, codec)
+            _call(
+                project,
+                "SetCurrentRenderFormatAndCodec",
+                False,
+                render_format,
+                codec,
+            )
