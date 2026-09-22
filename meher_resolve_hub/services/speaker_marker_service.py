@@ -84,6 +84,10 @@ class SpeakerSegment:
     transcript: str = ""
     source: str = "provided"
     identity_confidence: float = None
+    audio_confirmation: bool = False
+    visual_confirmation: bool = False
+    speaker_visibility: str = "unknown"
+    evidence_status: str = ""
 
     @property
     def duration(self):
@@ -173,6 +177,10 @@ class SpeakerMarkerService:
             transcript=str(value.get("transcript") or ""),
             source=str(value.get("source") or "provided"),
             identity_confidence=None if identity is None else float(identity),
+            audio_confirmation=bool(value.get("audio_confirmation", False)),
+            visual_confirmation=bool(value.get("visual_confirmation", False)),
+            speaker_visibility=str(value.get("speaker_visibility") or "unknown"),
+            evidence_status=str(value.get("evidence_status") or ""),
         )
 
     @staticmethod
@@ -216,6 +224,14 @@ class SpeakerMarkerService:
                     value for value in (previous.identity_confidence, segment.identity_confidence)
                     if value is not None
                 ]
+                if (
+                    previous.speaker_visibility != segment.speaker_visibility
+                    or previous.audio_confirmation != segment.audio_confirmation
+                    or previous.visual_confirmation != segment.visual_confirmation
+                    or previous.evidence_status != segment.evidence_status
+                ):
+                    result.append(segment)
+                    continue
                 result[-1] = SpeakerSegment(
                     previous.speaker,
                     previous.start_frame,
@@ -224,6 +240,10 @@ class SpeakerMarkerService:
                     transcript,
                     previous.source if previous.source == segment.source else "mixed",
                     min(identity_values) if identity_values else None,
+                    previous.audio_confirmation,
+                    previous.visual_confirmation,
+                    previous.speaker_visibility,
+                    previous.evidence_status,
                 )
             else:
                 result.append(segment)
@@ -294,8 +314,17 @@ class SpeakerMarkerService:
         for value in normalized:
             speaker, confirmed = self._map_speaker(value, speaker_map, identity_threshold)
             mapped.append(SpeakerSegment(
-                speaker, value.start_frame, value.end_frame, value.confidence,
-                value.transcript, value.source, value.identity_confidence
+                speaker,
+                value.start_frame,
+                value.end_frame,
+                value.confidence,
+                value.transcript,
+                value.source,
+                value.identity_confidence,
+                value.audio_confirmation,
+                value.visual_confirmation,
+                value.speaker_visibility,
+                value.evidence_status,
             ))
 
         min_frames = max(1, int(round(float(minimum_duration_ms) * fps / 1000.0)))
@@ -353,6 +382,10 @@ class SpeakerMarkerService:
                 note = "Speaker: %s" % segment.speaker
                 if segment.identity_confidence is not None:
                     note += " | Identity confidence: %.2f" % segment.identity_confidence
+                if segment.speaker_visibility and segment.speaker_visibility != "unknown":
+                    note += " | Visibility: %s" % segment.speaker_visibility
+                if segment.evidence_status:
+                    note += " | Evidence: %s" % segment.evidence_status
                 if transcript:
                     note += ' | "%s"' % transcript
 
@@ -366,6 +399,10 @@ class SpeakerMarkerService:
                     "segment_id": segment_id,
                     "analysis_source": segment.source,
                     "identity_confidence": segment.identity_confidence,
+                    "audio_confirmation": bool(segment.audio_confirmation),
+                    "visual_confirmation": bool(segment.visual_confirmation),
+                    "speaker_visibility": segment.speaker_visibility,
+                    "evidence_status": segment.evidence_status,
                     "timeline_start_frame": int(seg_start),
                     "timeline_end_frame_exclusive": int(seg_end),
                 }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
