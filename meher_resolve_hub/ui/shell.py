@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .. import theme
 from ..constants import APP_NAME, APP_SUBTITLE, APP_VERSION, COLOR_PICKER_WINDOW_ID, MAIN_WINDOW_ID, MARKER_COLORS, PREVIEW_WINDOW_ID, SELECTION_MODES, STILL_WINDOW_ID, WORKSPACES
-from ..credential_service import credential_store_label, test_openai_connection
+from ..credential_service import credential_store_label, test_elevenlabs_connection, test_openai_connection
 from ..marker_colors import hex_color_rgba, marker_color_dot_style, marker_color_rgba
 from ..models.operation import Change, OperationResult, PreviewSummary
 from ..preferences import user_data_dir, valid_window_geometry
@@ -309,7 +309,7 @@ class ResolveHubShell:
         preview_tree = self.preview_window.GetItems()["PreviewTree"]
         preview_tree.HeaderHidden = False
         preview_tree.SetHeaderLabels(["Object", "Field", "Before", "After", "Status"])
-        for identity, labels in (("MarkerEditorTabs", ("Details", "Range", "Batch")), ("SettingsTabs", ("General", "Marker Presets", "Metadata & Stills", "AI / OpenAI"))):
+        for identity, labels in (("MarkerEditorTabs", ("Details", "Range", "Batch")), ("SettingsTabs", ("General", "Marker Presets", "Metadata & Stills", "AI / Providers"))):
             tab = items[identity]
             if tab.Count() == 0:
                 for label in labels: tab.AddTab(label)
@@ -328,7 +328,14 @@ class ResolveHubShell:
         items["SettingOpenAIModel"].Text = prefs.get("openai", "model", "gpt-4o-transcribe-diarize")
         items["SettingOpenAITranscript"].Checked = prefs.get("openai", "include_transcript", False)
         items["SettingOpenAIKey"].Text = ""
+        items["SettingElevenLabsModel"].Text = prefs.get("elevenlabs", "model", "scribe_v2")
+        items["SettingElevenLabsLanguage"].Text = prefs.get("elevenlabs", "language_code", "")
+        items["SettingElevenLabsNumSpeakers"].Text = str(prefs.get("elevenlabs", "num_speakers", "") or "")
+        items["SettingElevenLabsSpeakerLibrary"].Checked = prefs.get("elevenlabs", "use_speaker_library", False)
+        items["SettingElevenLabsTranscript"].Checked = prefs.get("elevenlabs", "include_transcript", False)
+        items["SettingElevenLabsKey"].Text = ""
         self._refresh_openai_credential_status()
+        self._refresh_elevenlabs_credential_status()
 
     def _bind(self, identity, event, handler, window=None):
         (window or self.window).On[identity].__setattr__(event, handler)
@@ -451,6 +458,9 @@ class ResolveHubShell:
         self.window.On["SaveOpenAIKey"].Clicked = self._save_openai_key
         self.window.On["TestOpenAIKey"].Clicked = self._test_openai_key
         self.window.On["RemoveOpenAIKey"].Clicked = self._remove_openai_key
+        self.window.On["SaveElevenLabsKey"].Clicked = self._save_elevenlabs_key
+        self.window.On["TestElevenLabsKey"].Clicked = self._test_elevenlabs_key
+        self.window.On["RemoveElevenLabsKey"].Clicked = self._remove_elevenlabs_key
         self.window.On["ClearThumbnailCache"].Clicked = self._clear_thumbnail_cache
         self.window.On["BrowseCacheFolder"].Clicked = self._browse_cache_folder
         self.window.On["PresetTree"].ItemClicked = self._preset_selected
@@ -1919,6 +1929,25 @@ class ResolveHubShell:
             "mp3_bitrate_kbps": prefs.get("openai", "mp3_bitrate_kbps", 64),
             "credential_store": "os_keyring",
         })
+        num_speakers_text = str(items["SettingElevenLabsNumSpeakers"].Text or "").strip()
+        if num_speakers_text:
+            try:
+                num_speakers_value = int(num_speakers_text)
+                if not 1 <= num_speakers_value <= 32:
+                    raise ValueError
+            except ValueError:
+                self._set_status("ElevenLabs speaker count must be blank or 1-32.", True)
+                return
+        else:
+            num_speakers_value = ""
+        prefs.data.setdefault("elevenlabs", {}).update({
+            "model": str(items["SettingElevenLabsModel"].Text or "scribe_v2").strip() or "scribe_v2",
+            "language_code": str(items["SettingElevenLabsLanguage"].Text or "").strip(),
+            "num_speakers": num_speakers_value,
+            "use_speaker_library": bool(items["SettingElevenLabsSpeakerLibrary"].Checked),
+            "include_transcript": bool(items["SettingElevenLabsTranscript"].Checked),
+            "credential_store": "os_keyring",
+        })
         prefs.save()
         self.app.thumbnails.enabled = prefs.data["thumbnails"]["enabled"]
         cache_folder = str(prefs.data["thumbnails"]["cache_folder"] or "").strip()
@@ -1978,6 +2007,58 @@ class ResolveHubShell:
             self._set_status("Stored OpenAI API key removed.")
         except Exception as exc:
             self._refresh_openai_credential_status()
+            self._set_status(str(exc), True)
+
+    def _refresh_elevenlabs_credential_status(self):
+        items = self.window.GetItems()
+        status = self.app.elevenlabs_credentials.status()
+        if status.configured:
+            if status.backend == "environment":
+                text = "Configured from ELEVENLABS_API_KEY · %s" % (status.masked or "hidden")
+            else:
+                text = "Configured securely in %s · %s" % (
+                    credential_store_label(), status.masked or "hidden"
+                )
+        elif status.available:
+            text = "Not configured · %s ready" % credential_store_label()
+        else:
+            text = "Secure store unavailable · install Python keyring"
+        items["ElevenLabsCredentialStatus"].Text = text
+        return status
+
+    def _save_elevenlabs_key(self, event=None):
+        items = self.window.GetItems()
+        secret = str(items["SettingElevenLabsKey"].Text or "").strip()
+        if not secret:
+            self._set_status("Paste an ElevenLabs API key before saving.", True)
+            return
+        try:
+            self.app.elevenlabs_credentials.set_key(secret)
+            items["SettingElevenLabsKey"].Text = ""
+            self._refresh_elevenlabs_credential_status()
+            self._set_status("ElevenLabs API key saved securely in %s." % credential_store_label())
+        except Exception as exc:
+            items["SettingElevenLabsKey"].Text = ""
+            self._refresh_elevenlabs_credential_status()
+            self._set_status(str(exc), True)
+
+    def _test_elevenlabs_key(self, event=None):
+        self._set_status("Testing ElevenLabs connection…")
+        ok, message = test_elevenlabs_connection(
+            credential_store=self.app.elevenlabs_credentials,
+        )
+        self._refresh_elevenlabs_credential_status()
+        self._set_status(message, not ok)
+
+    def _remove_elevenlabs_key(self, event=None):
+        items = self.window.GetItems()
+        try:
+            self.app.elevenlabs_credentials.delete_key()
+            items["SettingElevenLabsKey"].Text = ""
+            self._refresh_elevenlabs_credential_status()
+            self._set_status("Stored ElevenLabs API key removed.")
+        except Exception as exc:
+            self._refresh_elevenlabs_credential_status()
             self._set_status(str(exc), True)
 
     def _browse_cache_folder(self, event=None):
