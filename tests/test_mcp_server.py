@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from meher_resolve_hub import mcp_server
-from tests.fakes import FakeFolder, FakeMediaPool
+from tests.fakes import FakeFolder, FakeMediaPool, FakeProject, FakeResolve, FakeTimeline, FakeTimelineItem, FakeClip
 
 
 class MCPServerTests(unittest.TestCase):
@@ -71,6 +71,40 @@ class MCPServerTests(unittest.TestCase):
             pool, "Master/01_MEDIA/STILLS/CODEX_REF"
         )
         self.assertIs(found, ref)
+
+    def test_active_speaker_visual_export_produces_temporal_samples(self):
+        import asyncio
+        from unittest.mock import patch
+
+        clip = FakeClip("media-1", "Mike_MCU_T01", {"Keywords": "Character=Mike"})
+        item = FakeTimelineItem(clip, start=100, end=124)
+        timeline = FakeTimeline([item])
+        timeline.GetName = lambda: "YSEW_EP01_SC04_SELECT"
+        project = FakeProject(timeline)
+        resolve = FakeResolve(project)
+
+        with patch.object(mcp_server, "_resolve", return_value=resolve):
+            result = asyncio.run(
+                mcp_server.export_active_speaker_visual_samples(
+                    sample_fps=6,
+                    max_frames_per_clip=6,
+                    max_clips=1,
+                )
+            )
+
+        self.assertEqual(result["timeline"], "YSEW_EP01_SC04_SELECT")
+        self.assertEqual(len(result["clips"]), 1)
+        samples = result["clips"][0]["samples"]
+        self.assertGreaterEqual(len(samples), 3)
+        for sample in samples:
+            self.assertTrue(Path(sample["image_path"]).is_file())
+
+        asyncio.run(
+            mcp_server.cleanup_visual_analysis_frames(
+                result["temporary_directory"]
+            )
+        )
+        self.assertFalse(Path(result["temporary_directory"]).exists())
 
     def test_visual_cleanup_rejects_non_temp_directory(self):
         with self.assertRaisesRegex(RuntimeError, "Refusing"):
