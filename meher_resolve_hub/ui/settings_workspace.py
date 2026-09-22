@@ -36,7 +36,7 @@ def build(ui):
                 ui.VGap(0, 1),
             ]),
             ui.VGroup({"Spacing": 10, "StyleSheet": theme.SURFACE}, [
-                ui.Label({"Text": "AI / OPENAI", "StyleSheet": theme.SECTION, "Weight": 0}),
+                ui.Label({"Text": "AI / PROVIDERS", "StyleSheet": theme.SECTION, "Weight": 0}),
                 ui.Label({
                     "Text": "The API key is stored in the operating-system credential store (macOS Keychain on macOS). It is never written to settings.json or Git.",
                     "WordWrap": True,
@@ -68,9 +68,42 @@ def build(ui):
                     ui.Label({"Text": "Model", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
                     line_edit(ui, "SettingOpenAIModel", "gpt-4o-transcribe-diarize"),
                 ]),
-                ui.CheckBox({"ID": "SettingOpenAITranscript", "Text": "Include transcript text in speaker-marker notes (off by default for Amharic/mixed dialogue)", "Weight": 0}),
+                ui.CheckBox({"ID": "SettingOpenAITranscript", "Text": "Include transcript text in OpenAI speaker-marker notes", "Weight": 0}),
+                ui.Label({"Text": "ELEVENLABS / SCRIBE", "StyleSheet": theme.SECTION, "Weight": 0}),
+                ui.HGroup({"Spacing": 7, "Weight": 0}, [
+                    ui.Label({"Text": "Status", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
+                    ui.Label({"ID": "ElevenLabsCredentialStatus", "Text": "Checking…", "StyleSheet": theme.SECTION, "Weight": 1}),
+                ]),
+                ui.HGroup({"Spacing": 7, "Weight": 0}, [
+                    ui.Label({"Text": "API key", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
+                    ui.LineEdit({
+                        "ID": "SettingElevenLabsKey",
+                        "PlaceholderText": "Paste ElevenLabs key to save/replace",
+                        "EchoMode": "Password",
+                        "StyleSheet": theme.FIELD,
+                        "Weight": 1,
+                    }),
+                ]),
+                ui.HGroup({"Spacing": 7, "Weight": 0}, [
+                    button(ui, "SaveElevenLabsKey", "Save Securely", True),
+                    button(ui, "TestElevenLabsKey", "Test Connection"),
+                    button(ui, "RemoveElevenLabsKey", "Remove Key"),
+                    ui.HGap(0, 1),
+                ]),
+                ui.HGroup({"Spacing": 7, "Weight": 0}, [
+                    ui.Label({"Text": "Model", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
+                    line_edit(ui, "SettingElevenLabsModel", "scribe_v2"),
+                    ui.Label({"Text": "Language", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
+                    line_edit(ui, "SettingElevenLabsLanguage", "blank = auto"),
+                ]),
+                ui.HGroup({"Spacing": 7, "Weight": 0}, [
+                    ui.Label({"Text": "Speakers", "StyleSheet": theme.SUBTITLE, "Weight": 0}),
+                    line_edit(ui, "SettingElevenLabsNumSpeakers", "blank = auto"),
+                    ui.CheckBox({"ID": "SettingElevenLabsSpeakerLibrary", "Text": "Use ElevenLabs speaker library", "Weight": 1}),
+                ]),
+                ui.CheckBox({"ID": "SettingElevenLabsTranscript", "Text": "Include transcript text in ElevenLabs speaker-marker notes", "Weight": 0}),
                 ui.Label({
-                    "Text": "Speaker timing and confirmed voice references are the primary signals. Transcript accuracy is not required for marker creation.",
+                    "Text": "OpenAI and ElevenLabs are independent providers. Keys stay in the OS credential store and are never saved to settings.json.",
                     "WordWrap": True,
                     "StyleSheet": theme.SUBTITLE,
                     "Weight": 0,
