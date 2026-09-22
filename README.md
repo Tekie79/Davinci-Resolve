@@ -1,6 +1,6 @@
 # Meher Flow Resolve Hub
 
-**Meher Flow Resolve Hub v0.4.1** is a modular DaVinci Resolve companion built
+**Meher Flow Resolve Hub v0.5.0** is a modular DaVinci Resolve companion built
 with Fusion UIManager. It centralizes marker, metadata, clip-name, still,
 media-health, and Codex-driven speaker analysis workflows.
 
@@ -10,16 +10,21 @@ The P0 interaction model is:
 
 ---
 
-## What v0.4.x adds
+## What v0.5.0 adds
 
 The speaker-dialogue workflow is designed for **Amharic, English, and mixed
 Amharic/English production audio** without depending on Resolve transcription or
 caption generation.
 
 The editor triggers Codex. Codex calls the locally installed Resolve Hub through
-MCP. Resolve Hub exports the actual Select-timeline audio, OpenAI
-**gpt-4o-transcribe-diarize** returns speaker start/end ranges, and Resolve Hub
-writes verified duration **clip markers** back to the Select timeline.
+MCP. Resolve Hub now supports three speaker-range modes:
+
+- audio-only OpenAI diarization;
+- visual-only temporal active-speaker analysis;
+- hybrid audio + visual evidence fusion.
+
+All modes write verified duration **clip markers** on TimelineItems, never
+generated timeline markers.
 
 ~~~text
 Editor
@@ -30,7 +35,9 @@ Installed Meher Flow Resolve Hub
   ↓
 Resolve Select timeline audio
   ↓
-temporary WAV → mono MP3 when ffmpeg is available
+Codex_Mp3 preset
+  ↓
+persistent <SelectTimelineName>_mp3.mp3
   ↓
 OpenAI speaker diarization
   + only the 1–4 expected character reference samples
@@ -192,21 +199,30 @@ Reference rules:
 The speaker request uses only the character names supplied for the current
 scene, with a maximum of **four known references per request**.
 
-## 6. Optional: install ffmpeg for smaller timeline uploads
+## 6. Configure the Resolve MP3 render preset
 
-Resolve Hub always creates a safe temporary WAV first.
+Create/verify the Resolve render preset:
 
-If ffmpeg is available, it converts the analysis copy to a **mono MP3**
-(default 64 kbps) before the OpenAI upload.
-
-Check:
-
-~~~bash
-ffmpeg -version
+~~~text
+Codex_Mp3
 ~~~
 
-If it is unavailable, the workflow automatically uses WAV instead. MP3 is an
-optimization, not a requirement.
+The normal speaker-analysis path renders the full Select mix directly to MP3.
+The project-specific Yekermo Sew workflow supplies:
+
+~~~text
+Primary:
+/Volumes/Harvest SSD/Select_ref_mp3_audios
+
+Fallback:
+/Users/harvest/Documents/Ysew_Project/Ref audio
+
+Filename stem:
+<SelectTimelineName>_mp3
+~~~
+
+WAV / Linear PCM is used only when the MP3 preset/export is unavailable,
+invalid, or too large for the direct analysis path.
 
 ## 7. Register the installed Resolve Hub MCP server with Codex
 
@@ -240,6 +256,8 @@ The exposed tools include:
 resolve_status
 list_select_timelines
 analyze_select_speakers_and_mark
+apply_speaker_segments_to_clips
+export_active_speaker_visual_samples
 rename_clips_from_keywords
 list_reference_stills
 export_timeline_clip_visuals
@@ -405,22 +423,73 @@ When the preview looks correct:
 
 Codex calls the installed MCP tool. Resolve Hub then:
 
-1. exports the current Select mix;
-2. compresses the temporary analysis file to MP3 when available;
-3. sends the timeline audio plus only the requested available voice references
-   to OpenAI;
-4. receives diarized speaker ranges;
-5. converts seconds to actual Resolve timeline frames;
-6. maps ranges to the correct TimelineItems;
-7. splits a range if it crosses a clip boundary;
-8. writes duration clip markers;
-9. reads the markers back and verifies them;
-10. removes the temporary analysis audio;
-11. restores the previous generated speaker markers if a batch write fails.
+1. loads the `Codex_Mp3` render preset;
+2. renders one full Select mix to an isolated staging folder;
+3. verifies and publishes `<SelectTimelineName>_mp3.mp3`;
+4. uses WAV only if MP3 export is unavailable/invalid/oversized;
+5. sends the verified analysis audio plus only the requested available voice
+   references to OpenAI;
+6. receives diarized speaker ranges;
+7. maps seconds to actual Resolve timeline frames;
+8. splits ranges at clip boundaries;
+9. writes duration **clip markers**;
+10. reads the markers back and verifies them;
+11. keeps the final reference audio and removes only staging/chunk files;
+12. restores previous generated markers if a batch write fails.
 
 No Resolve transcription/caption workflow is involved.
 
 ---
+
+# Visual-only active-speaker workflow
+
+Use:
+
+~~~text
+export_active_speaker_visual_samples
+~~~
+
+The MCP helper exports temporal PNG sequences from current Select TimelineItems
+(default first-pass target: about 6 fps, capped per clip). Codex can use those
+sequences to detect speech-like mouth/body motion without any audio analysis.
+
+Character identity must come from explicit metadata/editor confirmation, not face
+recognition.
+
+Visual-only segments can then be previewed/applied with:
+
+~~~text
+apply_speaker_segments_to_clips
+~~~
+
+# Hybrid audio + visual workflow
+
+Hybrid mode first runs audio diarization in preview, then correlates the audio
+ranges with temporal visual samples. Audio remains the timing authority; vision
+adds active-visible-subject and on-screen/off-screen evidence.
+
+Final fused segments carry fields such as:
+
+~~~text
+audio_confirmation
+visual_confirmation
+speaker_visibility
+evidence_status
+~~~
+
+Evidence statuses include:
+
+~~~text
+CONFIRMED
+AUDIO_CONFIRMED
+VISUAL_CONFIRMED
+REVIEW_REQUIRED
+UNKNOWN
+~~~
+
+The final fused ranges are sent to `apply_speaker_segments_to_clips`, so the
+same guarded clip-marker writer, collision checks, readback verification, and
+rollback behavior are reused.
 
 # Marker behavior
 
@@ -623,8 +692,9 @@ Do not force an UNKNOWN segment to a character solely from script dialogue.
 
 ## MP3 is not created
 
-Install/enable ffmpeg, or allow the workflow to use WAV. WAV remains fully
-supported.
+Verify that the Resolve render preset `Codex_Mp3` exists and can render an
+audio-only full-timeline MP3. If the preset/export fails, Resolve Hub reports the
+reason and attempts WAV fallback automatically.
 
 ---
 
