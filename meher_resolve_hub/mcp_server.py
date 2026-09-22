@@ -19,7 +19,7 @@ from mcp.server import MCPServer
 
 from .app import get_resolve_app
 from .constants import APP_VERSION, MARKER_COLORS
-from .credential_service import OpenAICredentialStore
+from .credential_service import ElevenLabsCredentialStore, OpenAICredentialStore
 from .resolve_context import ResolveContextService
 from .selection import SelectionEngine, SelectionUnavailable
 from .services.keyword_clip_rename_service import KeywordClipRenameService
@@ -350,13 +350,17 @@ async def resolve_status() -> Dict[str, object]:
     project = _project(resolve)
     timeline = project.GetCurrentTimeline()
     credential = OpenAICredentialStore().status()
+    elevenlabs_credential = ElevenLabsCredentialStore().status()
     return {
         "resolve_hub_version": APP_VERSION,
         "project": str(project.GetName() or ""),
         "timeline": _name(timeline),
         "openai_configured": bool(credential.configured),
-        "credential_backend": credential.backend,
-        "credential_masked": credential.masked,
+        "openai_credential_backend": credential.backend,
+        "openai_credential_masked": credential.masked,
+        "elevenlabs_configured": bool(elevenlabs_credential.configured),
+        "elevenlabs_credential_backend": elevenlabs_credential.backend,
+        "elevenlabs_credential_masked": elevenlabs_credential.masked,
     }
 
 
@@ -381,18 +385,27 @@ async def analyze_select_speakers_and_mark(
     mode: str = "preview",
     voice_reference_dir: Optional[str] = None,
     include_transcript: bool = False,
+    provider: str = "openai",
     audio_render_preset: str = "Codex_Mp3",
     audio_primary_dir: str = "/Volumes/Harvest SSD/Select_ref_mp3_audios",
     audio_fallback_dir: str = "/Users/harvest/Documents/Ysew_Project/Ref audio",
+    elevenlabs_model: str = "scribe_v2",
+    elevenlabs_language_code: Optional[str] = None,
+    elevenlabs_num_speakers: Optional[int] = None,
+    elevenlabs_use_speaker_library: bool = False,
+    elevenlabs_keyterms: Optional[List[str]] = None,
 ) -> Dict[str, object]:
-    """Analyze a Select timeline audio and write speaker range clip markers.
+    """Analyze Select audio with OpenAI or ElevenLabs and write clip markers.
 
-    The OpenAI key is read from secure local credential storage. Do not pass a
-    secret to this tool. characters limits known voice references to the people
-    expected in this scene (maximum four).
+    Provider API keys are read from secure local credential storage. Do not pass
+    secrets through MCP. OpenAI may use up to four requested local voice
+    references; ElevenLabs can optionally use its workspace speaker library.
     """
     if mode not in ("preview", "apply"):
         raise RuntimeError("mode must be preview or apply.")
+    provider = str(provider or "openai").strip().casefold()
+    if provider not in ("openai", "elevenlabs"):
+        raise RuntimeError("provider must be openai or elevenlabs.")
 
     colors = dict(speaker_colors or {})
     unsupported = sorted(set(colors.values()) - set(MARKER_COLORS))
@@ -412,9 +425,12 @@ async def analyze_select_speakers_and_mark(
     previous = project.GetCurrentTimeline()
     switched = not same_proxy(previous, target)
 
-    references, reference_warnings = _voice_references(
-        characters or [], voice_reference_dir
-    )
+    if provider == "openai":
+        references, reference_warnings = _voice_references(
+            characters or [], voice_reference_dir
+        )
+    else:
+        references, reference_warnings = {}, []
 
     try:
         if switched:
@@ -429,6 +445,12 @@ async def analyze_select_speakers_and_mark(
             speaker_colors=colors,
             mode=mode,
             include_transcript=bool(include_transcript),
+            analysis_provider=provider,
+            elevenlabs_model=str(elevenlabs_model or "scribe_v2"),
+            elevenlabs_language_code=elevenlabs_language_code,
+            elevenlabs_num_speakers=elevenlabs_num_speakers,
+            elevenlabs_use_speaker_library=bool(elevenlabs_use_speaker_library),
+            elevenlabs_keyterms=list(elevenlabs_keyterms or []),
             audio_export_options={
                 "render_preset": str(audio_render_preset),
                 "primary_output_dir": str(audio_primary_dir),
@@ -442,6 +464,8 @@ async def analyze_select_speakers_and_mark(
         output["voice_references_used"] = sorted(references)
         output["timeline"] = _name(target)
         output["mode"] = mode
+        output["provider"] = provider
+        output["elevenlabs_use_speaker_library"] = bool(elevenlabs_use_speaker_library)
         return output
     finally:
         if switched and previous:
