@@ -244,6 +244,14 @@ class OpenAIDiarizationAnalyzer:
                         "identity_confidence": identity_confidence,
                         "transcript": text if self.include_transcript else "",
                         "source": "openai:%s" % self.model,
+                        "audio_confirmation": True,
+                        "visual_confirmation": False,
+                        "speaker_visibility": "unknown",
+                        "evidence_status": (
+                            "AUDIO_CONFIRMED"
+                            if identity_confidence is not None
+                            else "UNKNOWN"
+                        ),
                     })
         finally:
             temp_dirs = set()
