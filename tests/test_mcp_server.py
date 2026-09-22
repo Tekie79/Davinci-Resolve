@@ -41,6 +41,19 @@ class MCPServerTests(unittest.TestCase):
         self.assertNotIn("openai_api_key", signature.parameters)
         self.assertNotIn("api_key", signature.parameters)
 
+    def test_speaker_mcp_exposes_codex_mp3_options(self):
+        signature = inspect.signature(mcp_server.analyze_select_speakers_and_mark)
+        self.assertIn("audio_render_preset", signature.parameters)
+        self.assertIn("audio_primary_dir", signature.parameters)
+        self.assertIn("audio_fallback_dir", signature.parameters)
+
+    def test_visual_and_precomputed_speaker_tools_are_exposed(self):
+        visual = inspect.signature(mcp_server.export_active_speaker_visual_samples)
+        apply_segments = inspect.signature(mcp_server.apply_speaker_segments_to_clips)
+        self.assertIn("sample_fps", visual.parameters)
+        self.assertIn("segments", apply_segments.parameters)
+        self.assertIn("mode", apply_segments.parameters)
+
     def test_keyword_rename_tool_has_no_filesystem_rename_argument(self):
         signature = inspect.signature(mcp_server.rename_clips_from_keywords)
         self.assertIn("source", signature.parameters)
