@@ -1,3 +1,4 @@
+import json
 import unittest
 import sys
 from pathlib import Path
@@ -167,6 +168,58 @@ class SpeakerMarkerServiceTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(self.b.markers[5]["color"], "Cream")
         self.assertTrue(any("Unsupported marker color" in value for value in result.warnings))
+
+    def test_hybrid_evidence_is_preserved_in_custom_data(self):
+        result = self.service.analyze_select_speakers_and_mark(
+            segments=[{
+                "speaker": "Mike",
+                "start_frame": 110,
+                "end_frame": 120,
+                "source": "hybrid-audio-visual",
+                "audio_confirmation": True,
+                "visual_confirmation": True,
+                "speaker_visibility": "onscreen",
+                "evidence_status": "CONFIRMED",
+            }],
+            speaker_colors=self.colors,
+        )
+        self.assertTrue(result.success)
+        data = json.loads(self.a.markers[10]["customData"])
+        self.assertTrue(data["audio_confirmation"])
+        self.assertTrue(data["visual_confirmation"])
+        self.assertEqual(data["speaker_visibility"], "onscreen")
+        self.assertEqual(data["evidence_status"], "CONFIRMED")
+        self.assertIn("Visibility: onscreen", self.a.markers[10]["note"])
+
+    def test_visibility_change_prevents_same_speaker_merge(self):
+        result = self.service.analyze_select_speakers_and_mark(
+            segments=[
+                {
+                    "speaker": "Mike",
+                    "start_frame": 110,
+                    "end_frame": 120,
+                    "audio_confirmation": True,
+                    "speaker_visibility": "onscreen",
+                    "evidence_status": "CONFIRMED",
+                },
+                {
+                    "speaker": "Mike",
+                    "start_frame": 121,
+                    "end_frame": 130,
+                    "audio_confirmation": True,
+                    "speaker_visibility": "offscreen",
+                    "evidence_status": "AUDIO_CONFIRMED",
+                },
+            ],
+            speaker_colors=self.colors,
+            merge_gap_ms=350,
+        )
+        self.assertTrue(result.success)
+        generated = [
+            marker for marker in self.a.markers.values()
+            if marker["name"].startswith("DIALOGUE")
+        ]
+        self.assertEqual(len(generated), 2)
 
     def test_missing_analysis_backend_is_explicit(self):
         result = self.service.analyze_select_speakers_and_mark(
