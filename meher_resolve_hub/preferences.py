@@ -17,6 +17,7 @@ DEFAULTS = {
     "stills": {"default_output_folder": "", "default_target_bin": "current", "naming_template": "{Timeline}_{Timecode}_{Index}"},
     "health": {"expected_resolutions": [], "short_clip_frames": 12, "expected_codecs": []},
     "openai": {"model": "gpt-4o-transcribe-diarize", "include_transcript": False, "analysis_audio_format": "mp3", "mp3_bitrate_kbps": 64, "credential_store": "os_keyring"},
+    "elevenlabs": {"model": "scribe_v2", "language_code": "", "use_speaker_library": False, "num_speakers": "", "include_transcript": False, "credential_store": "os_keyring"},
 }
 
 
