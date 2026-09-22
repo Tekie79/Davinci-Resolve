@@ -92,6 +92,7 @@ def analyze_select_speakers_and_mark(
     mode="apply",
     auto_export_audio=True,
     keep_analysis_audio=False,
+    audio_export_options=None,
     **kwargs
 ):
     """Analyze a Select timeline audio and add speaker range clip markers.
@@ -122,7 +123,8 @@ def analyze_select_speakers_and_mark(
                     mode=mode, **kwargs
                 )
             export_result = TimelineAudioExportService(context).export_select_timeline_audio(
-                timeline=timeline
+                timeline=timeline,
+                **dict(audio_export_options or {})
             )
             if not export_result.success:
                 from .models.operation import OperationResult
