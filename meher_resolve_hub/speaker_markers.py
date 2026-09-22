@@ -39,16 +39,9 @@ def analyze_audio_with_openai(
     known_speaker_references=None,
     openai_api_key=None,
     openai_model="gpt-4o-transcribe-diarize",
-    elevenlabs_api_key=None,
-    elevenlabs_model="scribe_v2",
-    analysis_provider="openai",
     include_transcript=False,
-    elevenlabs_language_code=None,
-    elevenlabs_num_speakers=None,
-    elevenlabs_use_speaker_library=False,
-    elevenlabs_keyterms=None,
 ):
-    """Analyze an audio file outside Resolve and return timed speaker segments."""
+    """Analyze an audio file outside Resolve with OpenAI diarization."""
     analyzer = OpenAIDiarizationAnalyzer(
         audio_path=audio_path,
         api_key=openai_api_key,
@@ -61,9 +54,8 @@ def analyze_audio_with_openai(
         "segments": segments,
         "warnings": list(analyzer.last_warnings),
         "model": openai_model,
+        "provider": "openai",
     }
-
-
 def analyze_audio_with_elevenlabs(
     audio_path,
     elevenlabs_api_key=None,
@@ -126,7 +118,14 @@ def analyze_select_speakers_and_mark(
     known_speaker_references=None,
     openai_api_key=None,
     openai_model="gpt-4o-transcribe-diarize",
+    elevenlabs_api_key=None,
+    elevenlabs_model="scribe_v2",
+    analysis_provider="openai",
     include_transcript=False,
+    elevenlabs_language_code=None,
+    elevenlabs_num_speakers=None,
+    elevenlabs_use_speaker_library=False,
+    elevenlabs_keyterms=None,
     speaker_map=None,
     speaker_colors=None,
     mode="apply",
@@ -141,7 +140,7 @@ def analyze_select_speakers_and_mark(
       Resolve Select timeline
         -> Codex_Mp3 preset to persistent reference MP3
         -> WAV fallback only when needed
-        -> OpenAI speaker diarization
+        -> selected provider: OpenAI or ElevenLabs speaker diarization
         -> speaker/color mapping
         -> verified TimelineItem duration markers
 
