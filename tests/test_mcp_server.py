@@ -47,6 +47,16 @@ class MCPServerTests(unittest.TestCase):
         self.assertIn("audio_primary_dir", signature.parameters)
         self.assertIn("audio_fallback_dir", signature.parameters)
 
+    def test_speaker_mcp_supports_parallel_providers(self):
+        signature = inspect.signature(mcp_server.analyze_select_speakers_and_mark)
+        self.assertEqual(signature.parameters["provider"].default, "openai")
+        self.assertIn("elevenlabs_model", signature.parameters)
+        self.assertIn("elevenlabs_language_code", signature.parameters)
+        self.assertIn("elevenlabs_num_speakers", signature.parameters)
+        self.assertIn("elevenlabs_use_speaker_library", signature.parameters)
+        self.assertIn("elevenlabs_keyterms", signature.parameters)
+        self.assertNotIn("elevenlabs_api_key", signature.parameters)
+
     def test_visual_and_precomputed_speaker_tools_are_exposed(self):
         visual = inspect.signature(mcp_server.export_active_speaker_visual_samples)
         apply_segments = inspect.signature(mcp_server.apply_speaker_segments_to_clips)
