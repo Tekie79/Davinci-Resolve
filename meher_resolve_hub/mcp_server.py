@@ -358,6 +358,9 @@ async def resolve_status() -> Dict[str, object]:
         "openai_configured": bool(credential.configured),
         "openai_credential_backend": credential.backend,
         "openai_credential_masked": credential.masked,
+        # Backward-compatible aliases retained for existing Codex workflows.
+        "credential_backend": credential.backend,
+        "credential_masked": credential.masked,
         "elevenlabs_configured": bool(elevenlabs_credential.configured),
         "elevenlabs_credential_backend": elevenlabs_credential.backend,
         "elevenlabs_credential_masked": elevenlabs_credential.masked,
