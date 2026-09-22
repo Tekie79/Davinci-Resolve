@@ -708,6 +708,28 @@ class SpeakerMarkerService:
             )
 
         fps = float(self.context_service.get_project_fps())
+        if segments is not None and str(mode or "apply").lower() == "apply":
+            review_required = []
+            for value in segments:
+                status = (
+                    value.evidence_status
+                    if isinstance(value, SpeakerSegment)
+                    else str((value or {}).get("evidence_status") or "")
+                    if isinstance(value, dict)
+                    else ""
+                )
+                if str(status).upper() == "REVIEW_REQUIRED":
+                    review_required.append(value)
+            if review_required:
+                return OperationResult(
+                    False,
+                    failed=len(review_required),
+                    errors=[
+                        "REVIEW_REQUIRED speaker evidence must be resolved before apply. "
+                        "Preview remains available."
+                    ],
+                )
+
         if segments is None:
             backend = analyzer or self.analyzer
             if backend is None:
