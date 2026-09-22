@@ -43,7 +43,7 @@ from meher_resolve_hub.services.still_service import StillService, default_outpu
 from meher_resolve_hub.utils import collect_bins, find_exported_png, png_filename, safe_filename_component, same_proxy as same_bin
 
 APP_TITLE = "Meher Flow Resolve Hub"
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.5.0"
 
 
 class MediaManagerController:
