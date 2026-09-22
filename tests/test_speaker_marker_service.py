@@ -221,6 +221,33 @@ class SpeakerMarkerServiceTests(unittest.TestCase):
         ]
         self.assertEqual(len(generated), 2)
 
+    def test_review_required_blocks_apply_but_allows_preview(self):
+        segment = {
+            "speaker": "Mike",
+            "start_frame": 110,
+            "end_frame": 120,
+            "audio_confirmation": True,
+            "visual_confirmation": True,
+            "speaker_visibility": "onscreen",
+            "evidence_status": "REVIEW_REQUIRED",
+        }
+        preview = self.service.analyze_select_speakers_and_mark(
+            segments=[segment],
+            speaker_colors=self.colors,
+            mode="preview",
+        )
+        self.assertTrue(preview.success)
+        self.assertEqual(self.a.markers, {})
+
+        apply_result = self.service.analyze_select_speakers_and_mark(
+            segments=[segment],
+            speaker_colors=self.colors,
+            mode="apply",
+        )
+        self.assertFalse(apply_result.success)
+        self.assertIn("REVIEW_REQUIRED", apply_result.errors[0])
+        self.assertEqual(self.a.markers, {})
+
     def test_missing_analysis_backend_is_explicit(self):
         result = self.service.analyze_select_speakers_and_mark(
             segments=None, speaker_colors=self.colors
