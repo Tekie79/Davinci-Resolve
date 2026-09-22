@@ -358,7 +358,7 @@ async def resolve_status() -> Dict[str, object]:
         "project": str(project.GetName() or ""),
         "timeline": _name(timeline),
         "speaker_provider": prefs.get("speaker_analysis", "provider", "openai"),
-        "openai_model": prefs.get("openai", "model", "gpt-4o-transcribe-diarize"),
+        "openai_model": "gpt-4o-transcribe-diarize",
         "elevenlabs_model": prefs.get("elevenlabs", "model", "scribe_v2"),
         "openai_configured": bool(credential.configured),
         "openai_credential_backend": credential.backend,
@@ -394,7 +394,6 @@ async def analyze_select_speakers_and_mark(
     voice_reference_dir: Optional[str] = None,
     include_transcript: Optional[bool] = None,
     provider: Optional[str] = None,
-    openai_model: Optional[str] = None,
     audio_render_preset: str = "Codex_Mp3",
     audio_primary_dir: str = "/Volumes/Harvest SSD/Select_ref_mp3_audios",
     audio_fallback_dir: str = "/Users/harvest/Documents/Ysew_Project/Ref audio",
@@ -420,9 +419,6 @@ async def analyze_select_speakers_and_mark(
     if provider not in ("openai", "elevenlabs"):
         raise RuntimeError("provider must be openai or elevenlabs.")
 
-    openai_model = str(
-        openai_model or prefs.get("openai", "model", "gpt-4o-transcribe-diarize")
-    ).strip() or "gpt-4o-transcribe-diarize"
     elevenlabs_model = str(
         elevenlabs_model or prefs.get("elevenlabs", "model", "scribe_v2")
     ).strip() or "scribe_v2"
@@ -486,7 +482,7 @@ async def analyze_select_speakers_and_mark(
             mode=mode,
             include_transcript=bool(include_transcript),
             analysis_provider=provider,
-            openai_model=openai_model,
+            openai_model="gpt-4o-transcribe-diarize",
             elevenlabs_model=elevenlabs_model,
             elevenlabs_language_code=elevenlabs_language_code,
             elevenlabs_num_speakers=elevenlabs_num_speakers,
@@ -507,7 +503,7 @@ async def analyze_select_speakers_and_mark(
         output["mode"] = mode
         output["provider"] = provider
         output["analysis_model"] = (
-            openai_model if provider == "openai" else elevenlabs_model
+            "gpt-4o-transcribe-diarize" if provider == "openai" else elevenlabs_model
         )
         output["elevenlabs_use_speaker_library"] = bool(elevenlabs_use_speaker_library)
         return output
