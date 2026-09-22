@@ -163,3 +163,37 @@ version, OS, page, project, timeline, and selection source with each run.
 - [ ] Do not infer character identity from a face; use Keywords/editor confirmation.
 - [ ] Confirm shot-type disagreements are reported for review before rename.
 - [ ] Call `cleanup_visual_analysis_frames` and verify only the owned temporary directory is deleted.
+
+
+## Codex_Mp3 speaker export
+
+- [ ] Confirm Resolve render preset `Codex_Mp3` exists.
+- [ ] Open a disposable Select timeline and run audio speaker preview.
+- [ ] Confirm one full-timeline MP3 is rendered, not Individual Clips.
+- [ ] Confirm primary output is `/Volumes/Harvest SSD/Select_ref_mp3_audios/<SelectTimelineName>_mp3.mp3`.
+- [ ] Unmount/unavailable the Harvest SSD and confirm fallback output is `/Users/harvest/Documents/Ysew_Project/Ref audio/<SelectTimelineName>_mp3.mp3`.
+- [ ] Temporarily rename/remove the `Codex_Mp3` preset and confirm WAV fallback is used and reported.
+- [ ] Confirm a failed MP3 render does not destroy the last verified reference file.
+- [ ] Confirm render mode and format/codec are restored after analysis.
+- [ ] Confirm the final reference MP3/WAV remains after analysis while staging/chunk files are cleaned.
+
+## Visual-only speaker ranges
+
+- [ ] Run `export_active_speaker_visual_samples` on a disposable Select timeline.
+- [ ] Confirm multiple temporal frames are exported per clip and the playhead is restored.
+- [ ] Confirm visual-only analysis uses no audio transcription request.
+- [ ] Confirm visible mouth/body motion can produce precomputed speaker ranges.
+- [ ] Confirm unresolved character identity is not guessed from a face.
+- [ ] Preview ranges with `apply_speaker_segments_to_clips`.
+- [ ] Confirm apply creates duration TimelineItem clip markers, not timeline markers.
+
+## Hybrid speaker ranges
+
+- [ ] Run audio diarization in preview only.
+- [ ] Export temporal visual samples for the same Select timeline.
+- [ ] Confirm an on-screen speaking character receives `speaker_visibility=onscreen`.
+- [ ] Confirm a reaction shot while another known character speaks receives the audio speaker with `speaker_visibility=offscreen`.
+- [ ] Confirm evidence conflict becomes `REVIEW_REQUIRED` and is surfaced before apply.
+- [ ] Confirm final fused segments are written through `apply_speaker_segments_to_clips`.
+- [ ] Confirm customData preserves audio_confirmation, visual_confirmation, speaker_visibility, and evidence_status.
+- [ ] Confirm manual marker collisions block all mutation and readback/rollback still works.
