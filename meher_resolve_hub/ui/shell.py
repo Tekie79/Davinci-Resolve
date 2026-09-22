@@ -300,11 +300,6 @@ class ResolveHubShell:
             ["OpenAI", "ElevenLabs"],
             "ElevenLabs" if provider == "elevenlabs" else "OpenAI",
         )
-        self._fill_combo(
-            "SettingOpenAIModel",
-            ["gpt-4o-transcribe-diarize", "whisper-1"],
-            prefs.get("openai", "model", "gpt-4o-transcribe-diarize"),
-        )
         main_tree_headers = {
             "MarkerTree": ("Preview", "Name", "Color", "Start", "End", "Duration", "Notes"),
             "MetadataClipTree": ("#", "Clip", "Scene", "Take", "Camera", "Reel"),
@@ -346,7 +341,6 @@ class ResolveHubShell:
         items["SettingElevenLabsKey"].Text = ""
         self._refresh_openai_credential_status()
         self._refresh_elevenlabs_credential_status()
-        self._refresh_openai_model_capability()
 
     def _bind(self, identity, event, handler, window=None):
         (window or self.window).On[identity].__setattr__(event, handler)
@@ -469,7 +463,6 @@ class ResolveHubShell:
         self.window.On["SaveOpenAIKey"].Clicked = self._save_openai_key
         self.window.On["TestOpenAIKey"].Clicked = self._test_openai_key
         self.window.On["RemoveOpenAIKey"].Clicked = self._remove_openai_key
-        self.window.On["SettingOpenAIModel"].CurrentIndexChanged = self._refresh_openai_model_capability
         self.window.On["SaveElevenLabsKey"].Clicked = self._save_elevenlabs_key
         self.window.On["TestElevenLabsKey"].Clicked = self._test_elevenlabs_key
         self.window.On["RemoveElevenLabsKey"].Clicked = self._remove_elevenlabs_key
@@ -1939,7 +1932,7 @@ class ResolveHubShell:
             provider = "openai"
         prefs.data.setdefault("speaker_analysis", {})["provider"] = provider
         prefs.data.setdefault("openai", {}).update({
-            "model": self._combo_text("SettingOpenAIModel").strip() or "gpt-4o-transcribe-diarize",
+            "model": "gpt-4o-transcribe-diarize",
             "include_transcript": bool(items["SettingOpenAITranscript"].Checked),
             "analysis_audio_format": prefs.get("openai", "analysis_audio_format", "mp3"),
             "mp3_bitrate_kbps": prefs.get("openai", "mp3_bitrate_kbps", 64),
@@ -1969,24 +1962,6 @@ class ResolveHubShell:
         cache_folder = str(prefs.data["thumbnails"]["cache_folder"] or "").strip()
         self.app.thumbnails.folder = Path(cache_folder) if cache_folder else user_data_dir() / ".cache" / "thumbnails"
         items["SettingsStatus"].Text = "Saved"; self._set_status("Settings saved")
-
-    def _refresh_openai_model_capability(self, event=None):
-        items = self.window.GetItems()
-        model = self._combo_text("SettingOpenAIModel").strip() or "gpt-4o-transcribe-diarize"
-        if model == "whisper-1":
-            text = (
-                "Whisper-1 provides multilingual transcription and timestamped "
-                "segments, but not native speaker diarization/known-speaker matching. "
-                "Audio-only speaker identities stay UNKNOWN unless a later visual/editor "
-                "mapping resolves them."
-            )
-        else:
-            text = (
-                "gpt-4o-transcribe-diarize provides native speaker diarization and "
-                "supports up to four known-speaker reference samples per request."
-            )
-        items["OpenAIModelCapability"].Text = text
-        return model
 
     def _refresh_openai_credential_status(self):
         items = self.window.GetItems()
@@ -2022,11 +1997,10 @@ class ResolveHubShell:
             self._set_status(str(exc), True)
 
     def _test_openai_key(self, event=None):
-        model = self._combo_text("SettingOpenAIModel").strip() or "gpt-4o-transcribe-diarize"
         self._set_status("Testing OpenAI connection…")
         ok, message = test_openai_connection(
             credential_store=self.app.credentials,
-            model=model or "gpt-4o-transcribe-diarize",
+            model="gpt-4o-transcribe-diarize",
         )
         self._refresh_openai_credential_status()
         self._set_status(message, not ok)
