@@ -38,4 +38,10 @@ class HistoryPreferencesTests(unittest.TestCase):
             self.assertEqual(prefs.get("general", "window_geometry"), [120, 80, 1240, 780])
 
 
+    def test_speaker_provider_default_is_openai(self):
+        with tempfile.TemporaryDirectory() as folder:
+            prefs = Preferences(Path(folder) / "settings.json")
+            prefs.load()
+            self.assertEqual(prefs.get("speaker_analysis", "provider"), "openai")
+
 if __name__ == "__main__": unittest.main()
