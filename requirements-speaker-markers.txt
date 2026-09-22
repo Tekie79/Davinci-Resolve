@@ -1,4 +1,4 @@
-# Dependencies for Codex/OpenAI speaker marker automation.
+# Dependencies for Codex speaker-marker automation with OpenAI and ElevenLabs.
 # Install into the Python environment used to launch the local MCP server.
 openai
 keyring
